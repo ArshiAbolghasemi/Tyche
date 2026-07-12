@@ -18,7 +18,14 @@ import pandas as pd
 
 from tyche.common.config import settings
 from tyche.common.logging import configure_logging, get_logger
-from tyche.news.agents import aggregator, auditor, ingest, neutralizer, scorer, segmentation
+from tyche.news.agents import (
+    aggregator,
+    auditor,
+    ingest,
+    neutralizer,
+    scorer,
+    segmentation,
+)
 from tyche.news.graph import build_graph
 from tyche.news.records import OUTPUT_COLUMNS
 
@@ -31,8 +38,12 @@ def _ingest_limited(input_path: Optional[str], limit: Optional[int]) -> pd.DataF
     return ingest.ingest(input_path, nrows=limit)
 
 
-def _write_contract(neutralized: pd.DataFrame, output_path: Optional[str]) -> pd.DataFrame:
-    contract = neutralized[[c for c in OUTPUT_COLUMNS if c in neutralized.columns]].copy()
+def _write_contract(
+    neutralized: pd.DataFrame, output_path: Optional[str]
+) -> pd.DataFrame:
+    contract = neutralized[
+        [c for c in OUTPUT_COLUMNS if c in neutralized.columns]
+    ].copy()
     out_path = Path(str(output_path or settings.paths.output))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     contract.to_parquet(out_path, index=False)

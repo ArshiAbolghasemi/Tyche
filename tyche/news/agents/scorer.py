@@ -20,6 +20,7 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 from huggingface_hub import HfApi, InferenceClient
+from transformers import AutoTokenizer
 
 from tyche.common.config import settings
 from tyche.common.logging import get_logger
@@ -60,7 +61,6 @@ def _load_tokenizer():
     A single cached load is shared with segmentation. No model weights are
     downloaded here — only the vocab/tokenizer files.
     """
-    from transformers import AutoTokenizer
 
     name = settings.model.name
     revision = settings.model.revision
