@@ -115,7 +115,7 @@ def audit_b(ingested: pd.DataFrame) -> dict:
 
 
 def _score_through(ingested: pd.DataFrame) -> pd.DataFrame:
-    return aggregator.aggregate(scorer.score(segmentation.segment(ingested)))
+    return aggregator.aggregate(scorer.score(segmentation.segment(ingested)), ingested)
 
 
 # --- Audit C ------------------------------------------------------------------
@@ -126,14 +126,28 @@ def audit_c(aggregated: pd.DataFrame) -> None:
     from tyche.news.agents import neutralizer
 
     ordered = aggregated.sort_values(Article.valid_time).reset_index(drop=True)
-    cut = int(len(ordered) * 0.8)
+    # Cut on a TRADING-DAY boundary, never mid-day: step 2's z-score is a
+    # same-day cross-sectional demean by design, so slicing inside a day would
+    # change kept rows' scores for a reason unrelated to the trailing window
+    # this audit is meant to test. Dropping whole future days leaves every kept
+    # day's cross-sectional bucket intact, isolating step 1's causality.
+    days = pd.to_datetime(ordered[Article.valid_time], utc=True).dt.normalize()
+    unique_days = np.sort(days.unique())
+    if len(unique_days) < 2:
+        log.warning(
+            "Audit C skipped: need ≥2 distinct trading days to test causality, got %d",
+            len(unique_days),
+        )
+        return
+    cutoff = unique_days[int(len(unique_days) * 0.8)]  # keep days strictly before it
+    past = ordered[days < cutoff]
     full = (
         neutralizer.neutralize(ordered)
         .sort_values([Article.id, Article.ticker])
         .reset_index(drop=True)
     )
     past_only = (
-        neutralizer.neutralize(ordered.iloc[:cut])
+        neutralizer.neutralize(past)
         .sort_values([Article.id, Article.ticker])
         .reset_index(drop=True)
     )
@@ -177,7 +191,7 @@ def audit_d(final: pd.DataFrame) -> dict:
             "mean": float(np.mean(v)),
             "std": float(np.std(v)),
             "skew": float(stats.skew(v)) if len(v) > 2 else 0.0,
-            "kurtosis": float(stats.kurt(v)) if len(v) > 3 else 0.0,
+            "kurtosis": float(stats.kurtosis(v)) if len(v) > 3 else 0.0,
         }
 
     report = {

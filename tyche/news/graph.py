@@ -33,7 +33,7 @@ def _score(state: PipelineState) -> dict:
 
 
 def _aggregate(state: PipelineState) -> dict:
-    return {"aggregated": aggregator.aggregate(state["scored"])}
+    return {"aggregated": aggregator.aggregate(state["scored"], state["ingested"])}
 
 
 def _neutralize(state: PipelineState) -> dict:

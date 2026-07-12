@@ -61,8 +61,13 @@ def _aggregate_group(group: pd.DataFrame) -> pd.Series:
     )
 
 
-def aggregate(scored: pd.DataFrame) -> pd.DataFrame:
+def aggregate(scored: pd.DataFrame, ingested: pd.DataFrame) -> pd.DataFrame:
+    """``ingested`` restores the per-(article, ticker) metadata (valid_time,
+    group_key, full_text, ...) that segmentation drops when it explodes articles
+    into spans; the full text is carried through to the output contract."""
     grouped = scored.groupby([Article.id, Article.ticker], sort=False)
     out = grouped.apply(_aggregate_group, include_groups=False).reset_index()
+    meta = ingested.drop_duplicates([Article.id, Article.ticker])
+    out = out.merge(meta, on=[Article.id, Article.ticker], how="left")
     log.info("aggregated to %d (article, ticker) rows", len(out))
     return out

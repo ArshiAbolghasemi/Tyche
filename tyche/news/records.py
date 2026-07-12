@@ -99,6 +99,7 @@ OUTPUT_COLUMNS: list[str] = [
     Article.group_key,
     Article.valid_time,
     Article.transaction_time,
+    Article.full_text,
     Aggregate.p_pos,
     Aggregate.p_neg,
     Aggregate.p_neu,
