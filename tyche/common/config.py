@@ -171,8 +171,12 @@ class SummarizerConfig:
     revision: str = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_REVISION", "main")
     )
-    provider: str = field(
-        default_factory=lambda: _env("TYCHE_SUMMARIZER_PROVIDER", "hf-inference")
+    # Local transformers pipeline execution (weights loaded in-process, no API).
+    device: str = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_DEVICE", "cpu")
+    )  # "cpu" | "cuda" | "mps" | integer device index as a string
+    batch_size: int = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_BATCH_SIZE", 8, int)
     )
     min_length: int = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_MIN_LENGTH", 60, int)
