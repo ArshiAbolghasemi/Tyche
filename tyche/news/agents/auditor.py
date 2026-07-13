@@ -17,7 +17,7 @@ from scipy import stats
 
 from tyche.common.config import settings
 from tyche.common.logging import get_logger
-from tyche.news.agents import aggregator, scorer, segmentation
+from tyche.news.agents import scorer, summarizer
 from tyche.news.records import (
     Aggregate,
     Article,
@@ -40,8 +40,15 @@ def audit_a() -> None:
     (no positional assumption), so this is a directional sanity check: each
     sentence must be dominated by its expected class with prob > 0.5.
     """
-    scorer.get_model_revision()  # warms the client + resolves revision
+    revision = scorer.get_model_revision()  # warms the client + resolves revision
     sentences = list(settings.auditor.sanity_sentences)
+    log.info(
+        "Audit A START: checking label mapping + %d sanity sentences on %s (rev=%s); "
+        "each sentence must be dominated by its expected class with prob > 0.5",
+        len(sentences),
+        settings.model.name,
+        revision,
+    )
     probs = scorer.score_texts([s["text"] for s in sentences])  # (n, 3) pos/neg/neu
     for row, (p_pos, p_neg, p_neu) in zip(sentences, probs):
         expect = SanityDirection(row["expect"])
@@ -51,12 +58,25 @@ def audit_a() -> None:
             2: SanityDirection.NEU,
         }[int(np.argmax([p_pos, p_neg, p_neu]))]
         top = max(p_pos, p_neg, p_neu)
-        if dominant is not expect or top <= 0.5:
+        status = "OK" if (dominant is expect and top > 0.5) else "FAIL"
+        log.info(
+            "Audit A check [%s]: %r expect=%s got pos=%.2f neg=%.2f neu=%.2f "
+            "(dominant=%s, top=%.2f)",
+            status,
+            row["text"],
+            expect.value,
+            p_pos,
+            p_neg,
+            p_neu,
+            dominant.value,
+            top,
+        )
+        if status == "FAIL":
             raise AuditError(
                 f"Audit A failed: {row['text']!r} expected {expect.value} but got "
                 f"pos={p_pos:.2f} neg={p_neg:.2f} neu={p_neu:.2f}"
             )
-    log.info("Audit A passed: label mapping + %d sanity sentences OK", len(sentences))
+    log.info("Audit A PASSED: label mapping + %d sanity sentences OK", len(sentences))
 
 
 # --- Audit B ------------------------------------------------------------------
@@ -73,15 +93,23 @@ def _mask(text: str, ticker: str, name: str) -> str:
 def audit_b(ingested: pd.DataFrame) -> dict:
     """Measure entity bias and persist the entity_prior artifact.
 
-    Scores each article NAMED and MASKED through agents 2→3→4; the per-ticker prior
-    is ``mean(raw_named − raw_masked)``, the per-group prior the mean across its
+    Scores each article NAMED and MASKED through Summarizer→Scorer; the per-ticker
+    prior is ``mean(raw_named − raw_masked)``, the per-group prior the mean across its
     tickers. This feeds Neutralizer step 0."""
+    log.info(
+        "Audit B START: measuring entity bias on %d (article, ticker) rows — scoring "
+        "each article NAMED vs MASKED (placeholder=%r) and taking the raw_score gap",
+        len(ingested),
+        str(settings.ingest.masked_placeholder),
+    )
+    log.info("Audit B: scoring NAMED articles through Summarizer→Scorer")
     named = _score_through(ingested)
     masked_src = ingested.copy()
     masked_src[Article.full_text] = [
         _mask(r[Article.full_text], r[Article.ticker], r.get(Article.name, ""))
         for _, r in masked_src.iterrows()
     ]
+    log.info("Audit B: scoring MASKED articles through Summarizer→Scorer")
     masked = _score_through(masked_src)
 
     merged = named.merge(
@@ -99,8 +127,19 @@ def audit_b(ingested: pd.DataFrame) -> dict:
     merged[Article.group_key] = merged[Article.ticker].map(group_map)
     by_group = merged.groupby(Article.group_key)["gap"].mean()
 
+    log.info(
+        "Audit B: gap (named − masked) over %d rows → mean=%.4f std=%.4f "
+        "min=%.4f max=%.4f across %d tickers / %d groups",
+        len(merged),
+        float(merged["gap"].mean()),
+        float(merged["gap"].std(ddof=0)),
+        float(merged["gap"].min()),
+        float(merged["gap"].max()),
+        by_ticker.size,
+        by_group.size,
+    )
     top20 = by_ticker.abs().sort_values(ascending=False).head(20)
-    log.info("Audit B top-biased tickers:\n%s", top20.to_string())
+    log.info("Audit B top-biased tickers (|prior|):\n%s", top20.to_string())
 
     artifact = {
         "model_revision": scorer.get_model_revision(),
@@ -110,12 +149,19 @@ def audit_b(ingested: pd.DataFrame) -> dict:
     path = Path(str(settings.neutralizer.entity_prior_path))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(artifact, indent=2))
-    log.info("Audit B wrote entity_prior for %d tickers to %s", len(by_ticker), path)
+    log.info(
+        "Audit B PASSED: wrote entity_prior for %d tickers / %d groups to %s",
+        len(by_ticker),
+        by_group.size,
+        path,
+    )
     return artifact
 
 
 def _score_through(ingested: pd.DataFrame) -> pd.DataFrame:
-    return aggregator.aggregate(scorer.score(segmentation.segment(ingested)), ingested)
+    """Summarize then score — the same two agents the live pipeline uses, minus the
+    neutralizer, so the raw_score reflects only FinBERT's read of the summary."""
+    return scorer.score(summarizer.summarize(ingested))
 
 
 # --- Audit C ------------------------------------------------------------------
@@ -125,6 +171,11 @@ def audit_c(aggregated: pd.DataFrame) -> None:
     bit-for-bit identical."""
     from tyche.news.agents import neutralizer
 
+    log.info(
+        "Audit C START: causality check on %d rows — neutralize the FULL set vs the "
+        "earliest days only, then assert past sentiment_final is bit-for-bit identical",
+        len(aggregated),
+    )
     ordered = aggregated.sort_values(Article.valid_time).reset_index(drop=True)
     # Cut on a TRADING-DAY boundary, never mid-day: step 2's z-score is a
     # same-day cross-sectional demean by design, so slicing inside a day would
@@ -141,6 +192,14 @@ def audit_c(aggregated: pd.DataFrame) -> None:
         return
     cutoff = unique_days[int(len(unique_days) * 0.8)]  # keep days strictly before it
     past = ordered[days < cutoff]
+    log.info(
+        "Audit C: %d distinct trading days; cutoff=%s → comparing %d past rows against "
+        "their values in the full %d-row neutralization",
+        len(unique_days),
+        pd.Timestamp(cutoff).date(),
+        len(past),
+        len(ordered),
+    )
     full = (
         neutralizer.neutralize(ordered)
         .sort_values([Article.id, Article.ticker])
@@ -168,8 +227,10 @@ def audit_c(aggregated: pd.DataFrame) -> None:
             "future rows were removed — the rolling window is leaking future data."
         )
     log.info(
-        "Audit C passed: past scores invariant to future rows (n_past=%d)",
+        "Audit C PASSED: past scores invariant to future rows "
+        "(n_past=%d, max|Δ sentiment_final|=%.3e)",
         len(past_only),
+        float(delta) if pd.notna(delta) else 0.0,
     )
 
 
@@ -184,6 +245,12 @@ def _psi(expected: np.ndarray, actual: np.ndarray, bins: int = 10) -> float:
 
 def audit_d(final: pd.DataFrame) -> dict:
     """Distribution health check; logs stats and raises alerts (non-fatal)."""
+    log.info(
+        "Audit D START: distribution health on %d final rows — checking raw_score & "
+        "sentiment_final moments, tercile balance, PSI drift vs baseline, and "
+        "per-group same-sign concentration",
+        len(final),
+    )
 
     def describe(x: pd.Series) -> dict:
         v = x.to_numpy()
@@ -209,6 +276,17 @@ def audit_d(final: pd.DataFrame) -> dict:
         "negative": float(np.mean(dominant == 1)),
         "neutral": float(np.mean(dominant == 2)),
     }
+    log.info(
+        "Audit D: raw_score %s; sentiment_final %s",
+        report["raw_score"],
+        report["sentiment_final"],
+    )
+    log.info(
+        "Audit D: tercile balance pos=%.1f%% neg=%.1f%% neu=%.1f%%",
+        report["terciles"]["positive"] * 100,
+        report["terciles"]["negative"] * 100,
+        report["terciles"]["neutral"] * 100,
+    )
 
     # PSI vs baseline (if present); persist current as the next baseline.
     baseline_path = Path(str(settings.auditor.baseline_path))
@@ -217,8 +295,19 @@ def audit_d(final: pd.DataFrame) -> dict:
         baseline = np.asarray(json.loads(baseline_path.read_text())["sentiment_final"])
         psi = _psi(baseline, final[Neutralize.sentiment_final].to_numpy())
         report["psi"] = psi
+        log.info(
+            "Audit D: PSI vs baseline (%s) = %.4f (threshold %.2f)",
+            baseline_path,
+            psi,
+            float(settings.auditor.psi_threshold),
+        )
         if psi > float(settings.auditor.psi_threshold):
             alerts.append(f"PSI {psi:.3f} exceeds {settings.auditor.psi_threshold}")
+    else:
+        log.info(
+            "Audit D: no baseline at %s — skipping PSI, writing current as baseline",
+            baseline_path,
+        )
     baseline_path.parent.mkdir(parents=True, exist_ok=True)
     baseline_path.write_text(
         json.dumps({"sentiment_final": final[Neutralize.sentiment_final].tolist()})
@@ -235,5 +324,10 @@ def audit_d(final: pd.DataFrame) -> dict:
     report["alerts"] = alerts
     for a in alerts:
         log.warning("Audit D alert: %s", a)
-    log.info("Audit D: %s", json.dumps({k: report[k] for k in ("n", "terciles")}))
+    log.info(
+        "Audit D %s: %d rows, %d alert(s)",
+        "PASSED (no alerts)" if not alerts else "COMPLETED WITH ALERTS",
+        len(final),
+        len(alerts),
+    )
     return report

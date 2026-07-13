@@ -157,6 +157,43 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class SummarizerConfig:
+    """Agent 2 — abstractive summarizer (``facebook/bart-large-cnn`` via the hosted
+    ``InferenceClient.summarization``). ``max_length`` is kept well under FinBERT's
+    512-token limit so the summary is never silently truncated at scoring, while
+    ``min_length`` guards against over-compression that would drop information.
+    Beam search (no sampling) keeps output deterministic — important for Audit C.
+    """
+
+    name: str = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_NAME", "facebook/bart-large-cnn")
+    )
+    revision: str = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_REVISION", "main")
+    )
+    provider: str = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_PROVIDER", "hf-inference")
+    )
+    min_length: int = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_MIN_LENGTH", 60, int)
+    )
+    max_length: int = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_MAX_LENGTH", 200, int)
+    )
+    num_beams: int = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_NUM_BEAMS", 4, int)
+    )
+    length_penalty: float = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_LENGTH_PENALTY", 2.0, float)
+    )
+    # Below this many words the source is already short — score it verbatim and
+    # skip the summarization API call entirely.
+    min_words_to_summarize: int = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_MIN_WORDS", 80, int)
+    )
+
+
+@dataclass(frozen=True)
 class AggregationConfig:
     position_lambda: float = field(
         default_factory=lambda: _env("TYCHE_AGGREGATION_POSITION_LAMBDA", 1.5, float)
@@ -287,6 +324,10 @@ class TycheSettings(Dynaconf):
     @property
     def model(self) -> ModelConfig:
         return ModelConfig()
+
+    @property
+    def summarizer(self) -> SummarizerConfig:
+        return SummarizerConfig()
 
     @property
     def aggregation(self) -> AggregationConfig:

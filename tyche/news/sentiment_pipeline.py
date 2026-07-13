@@ -19,12 +19,11 @@ import pandas as pd
 from tyche.common.config import settings
 from tyche.common.logging import configure_logging, get_logger
 from tyche.news.agents import (
-    aggregator,
     auditor,
     ingest,
     neutralizer,
     scorer,
-    segmentation,
+    summarizer,
 )
 from tyche.news.graph import build_graph
 from tyche.news.records import OUTPUT_COLUMNS
@@ -63,10 +62,8 @@ def run(
         # Bounded run: ingest a slice directly, then push it through the same
         # agents the graph would use (skips re-reading the full feed via state).
         ingested = _ingest_limited(input_path, limit)
-        aggregated = aggregator.aggregate(
-            scorer.score(segmentation.segment(ingested)), ingested
-        )
-        neutralized = neutralizer.neutralize(aggregated)
+        scored = scorer.score(summarizer.summarize(ingested))
+        neutralized = neutralizer.neutralize(scored)
         auditor.audit_d(neutralized)
     else:
         graph = build_graph()
@@ -107,10 +104,8 @@ def main() -> None:
         auditor.audit_b(_ingest_limited(args.input, args.limit))
     elif args.command == "audit-c":
         ingested = _ingest_limited(args.input, args.limit)
-        aggregated = aggregator.aggregate(
-            scorer.score(segmentation.segment(ingested)), ingested
-        )
-        auditor.audit_c(aggregated)
+        scored = scorer.score(summarizer.summarize(ingested))
+        auditor.audit_c(scored)
         log.info("audit-c OK")
 
 

@@ -46,14 +46,11 @@ class Article:
     full_text: str = "full_text"
 
 
-# --- Agent 2 — Segmentation output columns ---
+# --- Agent 2 — Summarizer output columns ---
 @dataclass(frozen=True)
-class Span:
-    id: str = "span_id"
-    text: str = "span_text"
-    position_index: str = "position_index"
-    n_tokens: str = "n_tokens"
-    relevant: str = "relevant"
+class Summary:
+    text: str = "summary_text"  # bart-large-cnn abstractive summary of full_text
+    n_tokens: str = "summary_n_tokens"  # FinBERT-tokenizer length of the summary
 
 
 # --- Agent 3 — Scorer output columns ---
@@ -66,15 +63,15 @@ class Score:
     model_revision: str = "model_revision"
 
 
-# --- Agent 4 — Aggregator output columns ---
+# --- Agent 3 — Scorer output columns (one score per summarized article, ticker) ---
+# Named ``Aggregate`` for continuity with the neutralizer/output contract; there is
+# no longer a span-aggregation step — the summary is scored directly.
 @dataclass(frozen=True)
 class Aggregate:
     p_pos: str = "agg_p_pos"
     p_neg: str = "agg_p_neg"
     p_neu: str = "agg_p_neu"
     raw_score: str = "raw_score"
-    n_spans: str = "n_spans"
-    n_relevant_spans: str = "n_relevant_spans"
 
 
 # --- Agent 5 — Neutralizer output columns ---
@@ -105,8 +102,7 @@ OUTPUT_COLUMNS: list[str] = [
     Aggregate.p_neu,
     Aggregate.raw_score,
     Neutralize.sentiment_final,
-    Aggregate.n_spans,
-    Aggregate.n_relevant_spans,
+    Summary.text,
     Neutralize.entity_prior_applied,
     Neutralize.shrinkage_weight_w,
     Score.model_revision,

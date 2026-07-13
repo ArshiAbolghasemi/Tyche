@@ -1,1 +1,1 @@
-"""The six pipeline agents, one module each."""
+"""The pipeline agents, one module each (ingest, summarizer, scorer, neutralizer, auditor)."""

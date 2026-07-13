@@ -1,21 +1,21 @@
-"""The 6-agent DAG, wired as a LangGraph ``StateGraph``.
+"""The agent DAG, wired as a LangGraph ``StateGraph``.
 
-    ingest → segmentation → scorer → aggregator → neutralizer → auditor → END
+    ingest → summarizer → scorer → neutralizer → auditor → END
 
 Each node is a thin wrapper that calls one agent and returns the state key it
-produces. No agent calls an LLM; all intelligence is FinBERT inference plus
-deterministic logic.
+produces. The Summarizer compresses each article with ``facebook/bart-large-cnn``
+and the Scorer runs FinBERT on that single summary — so there is one score per
+(article, ticker) and no span-aggregation step.
 """
 
 from __future__ import annotations
 
 from tyche.news.agents import (
-    aggregator,
     auditor,
     ingest,
     neutralizer,
     scorer,
-    segmentation,
+    summarizer,
 )
 from tyche.news.state import PipelineState
 
@@ -24,20 +24,16 @@ def _ingest(state: PipelineState) -> dict:
     return {"ingested": ingest.ingest(state.get("input_path"))}
 
 
-def _segment(state: PipelineState) -> dict:
-    return {"spans": segmentation.segment(state["ingested"])}
+def _summarize(state: PipelineState) -> dict:
+    return {"summarized": summarizer.summarize(state["ingested"])}
 
 
 def _score(state: PipelineState) -> dict:
-    return {"scored": scorer.score(state["spans"])}
-
-
-def _aggregate(state: PipelineState) -> dict:
-    return {"aggregated": aggregator.aggregate(state["scored"], state["ingested"])}
+    return {"scored": scorer.score(state["summarized"])}
 
 
 def _neutralize(state: PipelineState) -> dict:
-    return {"neutralized": neutralizer.neutralize(state["aggregated"])}
+    return {"neutralized": neutralizer.neutralize(state["scored"])}
 
 
 def _audit(state: PipelineState) -> dict:
@@ -50,17 +46,15 @@ def build_graph():
 
     graph = StateGraph(PipelineState)
     graph.add_node("ingest", _ingest)
-    graph.add_node("segmentation", _segment)
+    graph.add_node("summarizer", _summarize)
     graph.add_node("scorer", _score)
-    graph.add_node("aggregator", _aggregate)
     graph.add_node("neutralizer", _neutralize)
     graph.add_node("auditor", _audit)
 
     graph.add_edge(START, "ingest")
-    graph.add_edge("ingest", "segmentation")
-    graph.add_edge("segmentation", "scorer")
-    graph.add_edge("scorer", "aggregator")
-    graph.add_edge("aggregator", "neutralizer")
+    graph.add_edge("ingest", "summarizer")
+    graph.add_edge("summarizer", "scorer")
+    graph.add_edge("scorer", "neutralizer")
     graph.add_edge("neutralizer", "auditor")
     graph.add_edge("auditor", END)
     return graph.compile()

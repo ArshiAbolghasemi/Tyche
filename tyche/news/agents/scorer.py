@@ -24,7 +24,7 @@ from transformers import AutoTokenizer
 
 from tyche.common.config import settings
 from tyche.common.logging import get_logger
-from tyche.news.records import Score, Span
+from tyche.news.records import Aggregate, Score, Summary
 
 log = get_logger(__name__)
 
@@ -58,7 +58,7 @@ def _get_client() -> InferenceClient:
 def _load_tokenizer():
     """Load the FinBERT tokenizer (weights-free) for Agent 2's token guard.
 
-    A single cached load is shared with segmentation. No model weights are
+    A single cached load is shared with the summarizer's token guard. No weights are
     downloaded here — only the vocab/tokenizer files.
     """
 
@@ -90,20 +90,29 @@ def get_model_revision() -> str:
     return _resolve_revision(str(settings.model.name), str(settings.model.revision))
 
 
+def _truncate_to_limit(text: str) -> str:
+    """Belt-and-braces guard: hard-cut a text to FinBERT's token window so the hosted
+    endpoint never silently truncates (which would score partial text). The summarizer
+    keeps summaries well under this, so this fires only on rare edge cases."""
+    max_tokens = int(settings.model.max_tokens)
+    tokenizer = get_tokenizer()
+    ids = tokenizer.encode(text, add_special_tokens=True)
+    if len(ids) <= max_tokens:
+        return text
+    kept = tokenizer.encode(text, add_special_tokens=False)[: max_tokens - 2]
+    return tokenizer.decode(kept)
+
+
 def _score_one(text: str) -> dict[str, float]:
-    """Score a single span via the InferenceClient, returning a {label: score} map."""
+    """Score a single text via the InferenceClient, returning a {label: score} map."""
     client = _get_client()
     model = str(settings.model.name)
-    raw = client.text_classification(text, model=model)
+    raw = client.text_classification(_truncate_to_limit(text), model=model)
     # InferenceClient returns list[{label, score}] sorted by score desc.
     return {item["label"].lower(): float(item["score"]) for item in raw}
 
 
-def score(spans: pd.DataFrame) -> pd.DataFrame:
-    """Score every span through the InferenceClient. One API call per span (the
-    hosted text-classification endpoint accepts a single string). Returns the span
-    frame with (p_pos, p_neg, p_neu, s, revision) mapped by label NAME."""
-    revision = get_model_revision()
+def _require_labels() -> None:
     labels = [lab.lower() for lab in settings.model.expected_labels]
     for need in ("positive", "negative", "neutral"):
         if need not in labels:
@@ -111,33 +120,49 @@ def score(spans: pd.DataFrame) -> pd.DataFrame:
                 f"expected_labels={labels!r} is missing {need!r} — check settings."
             )
 
-    texts = spans[Span.text].tolist()
+
+def score(summarized: pd.DataFrame) -> pd.DataFrame:
+    """Score each summarized (article, ticker) row through the InferenceClient — one
+    API call per row. Emits the per-article score directly (no span aggregation):
+    ``agg_p_pos/agg_p_neg/agg_p_neu`` and ``raw_score = p_pos - p_neg`` (in [-1, 1],
+    ~0 when neutral dominates), carrying every upstream metadata column through."""
+    _require_labels()
+    revision = get_model_revision()
+
+    texts = summarized[Summary.text].fillna("").tolist()
     n = len(texts)
     probs = np.zeros((n, 3), dtype=float)
-
     for i, text in enumerate(texts):
         scores = _score_one(text)
         probs[i, 0] = scores.get("positive", 0.0)
         probs[i, 1] = scores.get("negative", 0.0)
         probs[i, 2] = scores.get("neutral", 0.0)
         if (i + 1) % 50 == 0:
-            log.info("scored %d/%d spans", i + 1, n)
+            log.info("scored %d/%d summaries", i + 1, n)
 
-    out = spans.copy()
-    out[Score.p_pos] = probs[:, 0]
-    out[Score.p_neg] = probs[:, 1]
-    out[Score.p_neu] = probs[:, 2]
-    out[Score.span_score] = (
-        out[Score.p_pos] - out[Score.p_neg]
-    )  # in [-1, 1]; ~0 when neutral is high
+    out = summarized.copy()
+    out[Aggregate.p_pos] = probs[:, 0]
+    out[Aggregate.p_neg] = probs[:, 1]
+    out[Aggregate.p_neu] = probs[:, 2]
+    out[Aggregate.raw_score] = out[Aggregate.p_pos] - out[Aggregate.p_neg]
     out[Score.model_revision] = revision
-    log.info("scored %d spans via InferenceClient", len(out))
+    log.info(
+        "scored %d summaries via InferenceClient (raw_score mean=%.4f std=%.4f)",
+        len(out),
+        float(out[Aggregate.raw_score].mean()) if len(out) else 0.0,
+        float(out[Aggregate.raw_score].std(ddof=0)) if len(out) else 0.0,
+    )
     return out
 
 
 def score_texts(texts: list[str]) -> np.ndarray:
     """Convenience: score a raw list of strings, returning an (n, 3) prob array in
     (p_pos, p_neg, p_neu) order. Used by Audit A sanity checks."""
-    frame = pd.DataFrame({Span.text: texts})
-    scored = score(frame)
-    return scored[[Score.p_pos, Score.p_neg, Score.p_neu]].to_numpy()
+    _require_labels()
+    probs = np.zeros((len(texts), 3), dtype=float)
+    for i, text in enumerate(texts):
+        scores = _score_one(text)
+        probs[i, 0] = scores.get("positive", 0.0)
+        probs[i, 1] = scores.get("negative", 0.0)
+        probs[i, 2] = scores.get("neutral", 0.0)
+    return probs
