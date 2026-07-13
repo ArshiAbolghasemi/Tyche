@@ -171,12 +171,8 @@ class SummarizerConfig:
     revision: str = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_REVISION", "main")
     )
-    # Local transformers pipeline execution (weights loaded in-process, no API).
-    device: str = field(
-        default_factory=lambda: _env("TYCHE_SUMMARIZER_DEVICE", "cpu")
-    )  # "cpu" | "cuda" | "mps" | integer device index as a string
-    batch_size: int = field(
-        default_factory=lambda: _env("TYCHE_SUMMARIZER_BATCH_SIZE", 8, int)
+    provider: str = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_PROVIDER", "hf-inference")
     )
     min_length: int = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_MIN_LENGTH", 60, int)
@@ -194,6 +190,16 @@ class SummarizerConfig:
     # skip the summarization API call entirely.
     min_words_to_summarize: int = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_MIN_WORDS", 80, int)
+    )
+    # BART's positional embeddings cap the input at 1024 tokens. Articles longer than
+    # this are map-reduced (chunked, each chunk summarized, chunk-summaries then
+    # summarized together) instead of truncated, so long articles aren't silently cut.
+    max_tokens: int = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_MAX_TOKENS", 1024, int)
+    )
+    # Concurrent hosted-API requests during summarization (thread pool; I/O bound).
+    max_workers: int = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_MAX_WORKERS", 8, int)
     )
 
 
