@@ -78,62 +78,6 @@ class IngestConfig:
     )
 
 
-@dataclass(frozen=True)
-class SegmentationConfig:
-    clause_delimiters: list[str] = field(
-        default_factory=lambda: _env_list(
-            "TYCHE_SEGMENTATION_CLAUSE_DELIMITERS",
-            [";", ",", " and ", " but ", " because ", " although ", " however "],
-        )
-    )
-    financial_vocab: list[str] = field(
-        default_factory=lambda: _env_list(
-            "TYCHE_SEGMENTATION_FINANCIAL_VOCAB",
-            [
-                "revenue",
-                "revenues",
-                "earnings",
-                "profit",
-                "loss",
-                "income",
-                "eps",
-                "ebitda",
-                "margin",
-                "guidance",
-                "outlook",
-                "dividend",
-                "acquisition",
-                "merger",
-                "deal",
-                "growth",
-                "decline",
-                "surge",
-                "drop",
-                "beat",
-                "miss",
-                "forecast",
-                "estimate",
-                "quarter",
-                "fiscal",
-                "stock",
-                "share",
-                "shares",
-                "market",
-                "price",
-                "target",
-                "upgrade",
-                "downgrade",
-                "buy",
-                "sell",
-                "hold",
-                "bullish",
-                "bearish",
-            ],
-        )
-    )
-
-
-@dataclass(frozen=True)
 class ModelConfig:
     name: str = field(
         default_factory=lambda: _env("TYCHE_MODEL_NAME", "ProsusAI/finbert")
@@ -467,10 +411,6 @@ class TycheSettings(Dynaconf):
     @property
     def ingest(self) -> IngestConfig:
         return IngestConfig()
-
-    @property
-    def segmentation(self) -> SegmentationConfig:
-        return SegmentationConfig()
 
     @property
     def model(self) -> ModelConfig:
