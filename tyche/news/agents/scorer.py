@@ -1,153 +1,218 @@
-"""Agent 3 — Scorer. The ONLY agent that touches the model (ProsusAI/finbert).
+"""Agent 5 — Scorer. Deduplicated summary → financial sentiment probabilities.
 
-Unlike a local-load path, scoring goes through the HuggingFace ``InferenceClient``
-(Router) with ``provider="hf-inference"``::
+This is the only agent that calls the sentiment model. Sentiment is extracted by an
+**Azure OpenAI** chat model (``gpt-4o-mini``) reached through **LangChain**
+(``AzureChatOpenAI``), not FinBERT. The model is given a comprehensive
+financial-sentiment system prompt and asked to return calibrated
+positive/negative/neutral probabilities for the described security, which are:
 
-    client = InferenceClient(provider="hf-inference", api_key=os.environ["HF_TOKEN"])
-    client.text_classification(text, model="ProsusAI/finbert")
+* validated against a **pydantic** schema (``SentimentScores`` — non-negative,
+  renormalized to sum to 1), and
+* retried on transient failures with **tenacity** (exponential backoff).
 
-The client returns per-label ``{label, score}`` pairs, so we map by label NAME
-(never by positional index) — there is no silent sign-flip risk because we read the
-label string straight off the API response. A cached ``AutoTokenizer`` is still used
-only by Agent 2 for the 512-token length guard (no model weights downloaded here).
+Only the *unique cluster representatives* produced by the Deduplicator are scored;
+every row inherits its representative's score, so near-duplicate reprints cost a
+single API call. Outputs mirror the old FinBERT contract — ``agg_p_pos/agg_p_neg/
+agg_p_neu`` and ``raw_score = p_pos - p_neg`` in ``[-1, 1]`` — so the Neutralizer and
+output schema are unchanged.
 """
 
 from __future__ import annotations
 
-import os
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import numpy as np
 import pandas as pd
-from huggingface_hub import HfApi, InferenceClient
-from transformers import AutoTokenizer
+from pydantic import BaseModel, Field, field_validator, model_validator
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from tyche.common.config import settings
 from tyche.common.logging import get_logger
-from tyche.news.records import Aggregate, Score, Summary
+from tyche.news.records import Aggregate, Dedup, Score, Summary
 
 log = get_logger(__name__)
 
 
-class LabelOrderError(RuntimeError):
-    """Raised when the model's id2label does not match the configured order."""
+# --- Response schema (pydantic) ----------------------------------------------
+class SentimentScores(BaseModel):
+    """Validated LLM sentiment response.
 
-
-@lru_cache(maxsize=1)
-def _get_client() -> InferenceClient:
-    """Build the singleton HuggingFace ``InferenceClient``.
-
-    ``HF_TOKEN`` must be present in the environment (or ``.secrets.toml`` /
-    ``.env``). The provider and model come from settings.
+    Probabilities are coerced to be non-negative and renormalized to sum to 1, so a
+    model that returns slightly off-sum values (or a lone class) still yields a proper
+    distribution. ``rationale`` is a short human-readable justification for auditing.
     """
-    token = os.environ.get("HF_TOKEN", "")
-    if not token:
-        raise RuntimeError(
-            "HF_TOKEN is not set — the InferenceClient needs a HuggingFace API token. "
-            "Export it (export HF_TOKEN=...) or put it in tyche/common/.secrets.toml."
-        )
-    provider = str(settings.model.provider)
-    client = InferenceClient(provider=provider, api_key=token)
-    log.info(
-        "InferenceClient ready (provider=%s, model=%s)", provider, settings.model.name
+
+    p_positive: float = Field(
+        description="Probability the news is POSITIVE for the security's investors.",
+        ge=0.0,
+        le=1.0,
     )
-    return client
+    p_negative: float = Field(
+        description="Probability the news is NEGATIVE for the security's investors.",
+        ge=0.0,
+        le=1.0,
+    )
+    p_neutral: float = Field(
+        description="Probability the news is NEUTRAL / has no clear directional impact.",
+        ge=0.0,
+        le=1.0,
+    )
+    rationale: str = Field(
+        default="",
+        description="One concise sentence justifying the sentiment assessment.",
+    )
+
+    @field_validator("p_positive", "p_negative", "p_neutral")
+    @classmethod
+    def _clip_non_negative(cls, v: float) -> float:
+        return max(0.0, float(v))
+
+    @model_validator(mode="after")
+    def _renormalize(self) -> "SentimentScores":
+        total = self.p_positive + self.p_negative + self.p_neutral
+        if total <= 0:
+            # Degenerate response — fall back to fully neutral.
+            self.p_positive, self.p_negative, self.p_neutral = 0.0, 0.0, 1.0
+        else:
+            self.p_positive /= total
+            self.p_negative /= total
+            self.p_neutral /= total
+        return self
+
+    def as_triplet(self) -> tuple[float, float, float]:
+        """Return ``(p_pos, p_neg, p_neu)`` in the scorer's canonical order."""
+        return self.p_positive, self.p_negative, self.p_neutral
 
 
+# --- LLM client ---------------------------------------------------------------
+# The system prompt sent with every scoring call comes from
+# ``settings.sentiment.system_prompt`` (env-overridable via
+# ``TYCHE_SENTIMENT_SYSTEM_PROMPT``; see ``tyche.common.config`` for the default).
 @lru_cache(maxsize=1)
-def _load_tokenizer():
-    """Load the FinBERT tokenizer (weights-free) for Agent 2's token guard.
+def _get_structured_llm():
+    """Build the singleton Azure OpenAI chat model wrapped for structured output.
 
-    A single cached load is shared with the summarizer's token guard. No weights are
-    downloaded here — only the vocab/tokenizer files.
+    ``TYCHE_SENTIMENT_API_KEY`` must be present in the environment (or ``.env``); the
+    endpoint, deployment and API version come from settings.
     """
+    from langchain_openai import AzureChatOpenAI
 
-    name = settings.model.name
-    revision = settings.model.revision
-    tokenizer = AutoTokenizer.from_pretrained(name, revision=revision)
-    log.info("loaded tokenizer for %s (token-guard only)", name)
-    return tokenizer
-
-
-@lru_cache(maxsize=1)
-def get_tokenizer():
-    """FinBERT tokenizer, shared with Agent 2's token-length guard (single load)."""
-    return _load_tokenizer()
-
-
-def _resolve_revision(name: str, revision: str) -> str:
-    """Resolve a branch/tag to a concrete commit hash for reproducibility."""
-    try:
-        info = HfApi().model_info(name, revision=revision)
-        return info.sha or revision
-    except Exception:  # pragma: no cover - offline / hub error
-        return revision
+    cfg = settings.sentiment
+    if not cfg.api_key:
+        raise RuntimeError(
+            "TYCHE_SENTIMENT_API_KEY is not set — the Azure OpenAI sentiment scorer "
+            "needs an API key. Export it (export TYCHE_SENTIMENT_API_KEY=...) or put "
+            "it in the gitignored .env file."
+        )
+    llm = AzureChatOpenAI(
+        azure_endpoint=str(cfg.endpoint),
+        azure_deployment=str(cfg.deployment),
+        api_version=str(cfg.api_version),
+        api_key=str(cfg.api_key),
+        temperature=float(cfg.temperature),
+        timeout=float(cfg.request_timeout),
+        max_retries=0,  # retries are handled by tenacity around the call
+    )
+    log.info(
+        "sentiment LLM ready (Azure deployment=%s, api-version=%s)",
+        cfg.deployment,
+        cfg.api_version,
+    )
+    return llm.with_structured_output(SentimentScores)
 
 
 @lru_cache(maxsize=1)
 def get_model_revision() -> str:
-    """Frozen model revision (commit hash) recorded on every output row."""
-    return _resolve_revision(str(settings.model.name), str(settings.model.revision))
+    """Model identity recorded on every output row (Azure deployment + api-version)."""
+    cfg = settings.sentiment
+    return f"azure:{cfg.deployment}@{cfg.api_version}"
 
 
-def _truncate_to_limit(text: str) -> str:
-    """Belt-and-braces guard: hard-cut a text to FinBERT's token window so the hosted
-    endpoint never silently truncates (which would score partial text). The summarizer
-    keeps summaries well under this, so this fires only on rare edge cases."""
-    max_tokens = int(settings.model.max_tokens)
-    tokenizer = get_tokenizer()
-    ids = tokenizer.encode(text, add_special_tokens=True)
-    if len(ids) <= max_tokens:
-        return text
-    kept = tokenizer.encode(text, add_special_tokens=False)[: max_tokens - 2]
-    return tokenizer.decode(kept)
+def _score_call(text: str) -> SentimentScores:
+    """One structured LLM call, retried on transient errors by the tenacity wrapper."""
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    llm = _get_structured_llm()
+    result = llm.invoke(
+        [
+            SystemMessage(content=str(settings.sentiment.system_prompt)),
+            HumanMessage(content=f"News summary:\n\n{text}"),
+        ]
+    )
+    # ``with_structured_output`` already returns a validated ``SentimentScores``; the
+    # explicit reconstruction re-runs the pydantic validators as a belt-and-braces
+    # guard against provider quirks (e.g. a raw dict slipping through).
+    return SentimentScores.model_validate(
+        result if isinstance(result, dict) else result.model_dump()
+    )
 
 
-def _score_one(text: str) -> dict[str, float]:
-    """Score a single text via the InferenceClient, returning a {label: score} map."""
-    client = _get_client()
-    model = str(settings.model.name)
-    raw = client.text_classification(_truncate_to_limit(text), model=model)
-    # InferenceClient returns list[{label, score}] sorted by score desc.
-    return {item["label"].lower(): float(item["score"]) for item in raw}
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(int(settings.sentiment.max_retries)),
+    wait=wait_exponential(multiplier=1, min=1, max=30),
+    retry=retry_if_exception_type(Exception),
+)
+def _score_one(text: str) -> tuple[float, float, float, str]:
+    """Score a single summary, returning ``(p_pos, p_neg, p_neu, rationale)``.
+
+    Empty text short-circuits to fully neutral (no API call)."""
+    if not text or not text.strip():
+        return 0.0, 0.0, 1.0, "empty summary"
+    scores = _score_call(text)
+    p_pos, p_neg, p_neu = scores.as_triplet()
+    return p_pos, p_neg, p_neu, scores.rationale
 
 
-def _require_labels() -> None:
-    labels = [lab.lower() for lab in settings.model.expected_labels]
-    for need in ("positive", "negative", "neutral"):
-        if need not in labels:
-            raise LabelOrderError(
-                f"expected_labels={labels!r} is missing {need!r} — check settings."
-            )
+def _score_unique(texts: list[str]) -> dict[str, tuple[float, float, float, str]]:
+    """Score each unique text once, concurrently. Returns a text → triplet+rationale map."""
+    max_workers = max(1, int(settings.sentiment.max_workers))
+    cache: dict[str, tuple[float, float, float, str]] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for text, res in zip(texts, pool.map(_score_one, texts)):
+            cache[text] = res
+    return cache
 
 
-def score(summarized: pd.DataFrame) -> pd.DataFrame:
-    """Score each summarized (article, ticker) row through the InferenceClient — one
-    API call per row. Emits the per-article score directly (no span aggregation):
+def score(deduplicated: pd.DataFrame) -> pd.DataFrame:
+    """Score each row's cluster-representative summary through Azure OpenAI — one call
+    per unique representative, shared across the cluster's members. Emits per-row
     ``agg_p_pos/agg_p_neg/agg_p_neu`` and ``raw_score = p_pos - p_neg`` (in [-1, 1],
-    ~0 when neutral dominates), carrying every upstream metadata column through."""
-    _require_labels()
+    ~0 when neutral dominates), carrying every upstream column through."""
     revision = get_model_revision()
 
-    texts = summarized[Summary.text].fillna("").tolist()
-    n = len(texts)
-    probs = np.zeros((n, 3), dtype=float)
-    for i, text in enumerate(texts):
-        scores = _score_one(text)
-        probs[i, 0] = scores.get("positive", 0.0)
-        probs[i, 1] = scores.get("negative", 0.0)
-        probs[i, 2] = scores.get("neutral", 0.0)
-        if (i + 1) % 50 == 0:
-            log.info("scored %d/%d summaries", i + 1, n)
+    # Score the deduplicated representative when present; otherwise the raw summary.
+    text_col = (
+        Dedup.representative_text
+        if Dedup.representative_text in deduplicated.columns
+        else Summary.text
+    )
+    texts = deduplicated[text_col].fillna("").tolist()
+    unique_texts = list(dict.fromkeys(texts))
+    log.info(
+        "scoring %d rows via Azure OpenAI (%s) — %d unique summaries to score",
+        len(texts),
+        revision,
+        len(unique_texts),
+    )
+    cache = _score_unique(unique_texts)
 
-    out = summarized.copy()
-    out[Aggregate.p_pos] = probs[:, 0]
-    out[Aggregate.p_neg] = probs[:, 1]
-    out[Aggregate.p_neu] = probs[:, 2]
+    triplets = np.array([cache[t][:3] for t in texts], dtype=float).reshape(-1, 3)
+    out = deduplicated.copy()
+    out[Aggregate.p_pos] = triplets[:, 0]
+    out[Aggregate.p_neg] = triplets[:, 1]
+    out[Aggregate.p_neu] = triplets[:, 2]
     out[Aggregate.raw_score] = out[Aggregate.p_pos] - out[Aggregate.p_neg]
+    out[Score.rationale] = [cache[t][3] for t in texts]
     out[Score.model_revision] = revision
     log.info(
-        "scored %d summaries via InferenceClient (raw_score mean=%.4f std=%.4f)",
+        "scored %d rows via Azure OpenAI (raw_score mean=%.4f std=%.4f)",
         len(out),
         float(out[Aggregate.raw_score].mean()) if len(out) else 0.0,
         float(out[Aggregate.raw_score].std(ddof=0)) if len(out) else 0.0,
@@ -158,11 +223,5 @@ def score(summarized: pd.DataFrame) -> pd.DataFrame:
 def score_texts(texts: list[str]) -> np.ndarray:
     """Convenience: score a raw list of strings, returning an (n, 3) prob array in
     (p_pos, p_neg, p_neu) order. Used by Audit A sanity checks."""
-    _require_labels()
-    probs = np.zeros((len(texts), 3), dtype=float)
-    for i, text in enumerate(texts):
-        scores = _score_one(text)
-        probs[i, 0] = scores.get("positive", 0.0)
-        probs[i, 1] = scores.get("negative", 0.0)
-        probs[i, 2] = scores.get("neutral", 0.0)
-    return probs
+    cache = _score_unique(list(dict.fromkeys(texts)))
+    return np.array([cache[t][:3] for t in texts], dtype=float).reshape(-1, 3)

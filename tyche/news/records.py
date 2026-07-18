@@ -50,10 +50,28 @@ class Article:
 @dataclass(frozen=True)
 class Summary:
     text: str = "summary_text"  # bart-large-cnn abstractive summary of full_text
-    n_tokens: str = "summary_n_tokens"  # FinBERT-tokenizer length of the summary
+    n_tokens: str = "summary_n_tokens"  # bge-m3-tokenizer length of the summary
 
 
-# --- Agent 3 — Scorer output columns ---
+# --- Agent 3 — Embedder output columns ---
+@dataclass(frozen=True)
+class Embedding:
+    n_tokens: str = "embedding_n_tokens"  # bge-m3-tokenizer length of the summary
+
+
+# --- Agent 4 — Deduplicator output columns ---
+# Near-duplicate summaries (reprints/syndications) are clustered per month; every row
+# inherits its cluster representative's summary so the sentiment call runs once per
+# cluster and the score is shared across the cluster's members.
+@dataclass(frozen=True)
+class Dedup:
+    month: str = "dedup_month"  # calendar-month bucket the row was deduplicated within
+    cluster_id: str = "dedup_cluster_id"  # month-scoped cluster label
+    is_representative: str = "is_representative"  # True for the closest-to-centroid row
+    representative_text: str = "representative_summary"  # summary that will be scored
+
+
+# --- Agent 5 — Scorer output columns ---
 @dataclass(frozen=True)
 class Score:
     p_pos: str = "p_pos"
@@ -61,11 +79,12 @@ class Score:
     p_neu: str = "p_neu"
     span_score: str = "s"  # p_pos - p_neg
     model_revision: str = "model_revision"
+    rationale: str = "sentiment_rationale"  # LLM's one-line justification
 
 
-# --- Agent 3 — Scorer output columns (one score per summarized article, ticker) ---
+# --- Agent 5 — Scorer output columns (one score per deduplicated summary, ticker) ---
 # Named ``Aggregate`` for continuity with the neutralizer/output contract; there is
-# no longer a span-aggregation step — the summary is scored directly.
+# no span-aggregation step — the (deduplicated) summary is scored directly.
 @dataclass(frozen=True)
 class Aggregate:
     p_pos: str = "agg_p_pos"
@@ -103,6 +122,9 @@ OUTPUT_COLUMNS: list[str] = [
     Aggregate.raw_score,
     Neutralize.sentiment_final,
     Summary.text,
+    Dedup.representative_text,
+    Dedup.is_representative,
+    Score.rationale,
     Neutralize.entity_prior_applied,
     Neutralize.shrinkage_weight_w,
     Score.model_revision,

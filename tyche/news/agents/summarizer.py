@@ -20,9 +20,10 @@ Design guards
 * Map-reduce chunking (not truncation) for inputs over the BART token limit — no
   positional-index overflow, and no information silently dropped from the tail of
   long articles.
-* ``max_length`` (config) is kept well under FinBERT's 512-token window so the
-  summary is never silently truncated when scored; a FinBERT-tokenizer length guard
-  in the Scorer is the belt-and-braces backstop.
+* The summary now feeds the Embedder (``BAAI/bge-m3``, 8192-token context) and the
+  LLM sentiment Scorer, so ``max_length`` (config) no longer has to fit FinBERT's old
+  512-token window and can retain more of the article; a bge-m3-tokenizer length guard
+  in the Embedder is the belt-and-braces backstop.
 * ``min_length`` protects against over-compression that would drop information.
 * Beam search with no sampling (``do_sample`` is not exposed by the endpoint, but
   omitting temperature/top_p keeps it deterministic) → the same article always yields
@@ -50,7 +51,7 @@ from transformers import AutoTokenizer
 
 from tyche.common.config import settings
 from tyche.common.logging import get_logger
-from tyche.news.agents.scorer import get_tokenizer
+from tyche.news.service.embedder import get_tokenizer
 from tyche.news.records import Article, Summary
 
 log = get_logger(__name__)
@@ -187,7 +188,7 @@ def summarize(ingested: pd.DataFrame) -> pd.DataFrame:
         out[Summary.n_tokens] = pd.Series(dtype="int")
         return out
 
-    tokenizer = get_tokenizer()
+    tokenizer = get_tokenizer()  # bge-m3 tokenizer — the summary's downstream consumer
     max_workers = max(1, int(settings.summarizer.max_workers))
     log.info(
         "summarizing %d rows with %s (rev=%s) params=%s (chunk limit %d BART tokens, "
@@ -239,11 +240,11 @@ def summarize(ingested: pd.DataFrame) -> pd.DataFrame:
     out[Summary.n_tokens] = [
         len(tokenizer.encode(s, add_special_tokens=True)) for s in out[Summary.text]
     ]
-    over = int((out[Summary.n_tokens] > int(settings.model.max_tokens)).sum())
+    over = int((out[Summary.n_tokens] > int(settings.embedding.max_tokens)).sum())
     log.info(
         "summarized %d rows (%d passthrough short articles, %d API failures "
         "fell back to verbatim); summary tokens min=%d mean=%.1f max=%d; %d over "
-        "FinBERT's %d-token limit (scorer will guard)",
+        "bge-m3's %d-token limit (embedder will guard)",
         len(out),
         n_passthrough,
         n_failed,
@@ -251,6 +252,6 @@ def summarize(ingested: pd.DataFrame) -> pd.DataFrame:
         float(out[Summary.n_tokens].mean()),
         int(out[Summary.n_tokens].max()),
         over,
-        int(settings.model.max_tokens),
+        int(settings.embedding.max_tokens),
     )
     return out

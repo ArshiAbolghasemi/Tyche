@@ -34,19 +34,19 @@ class AuditError(RuntimeError):
 
 # --- Audit A ------------------------------------------------------------------
 def audit_a() -> None:
-    """Verify label order and sanity-sentence directions. HALT on any failure.
+    """Verify sanity-sentence directions. HALT on any failure.
 
-    With the InferenceClient, label mapping comes from the API response by NAME
-    (no positional assumption), so this is a directional sanity check: each
-    sentence must be dominated by its expected class with prob > 0.5.
+    The Azure OpenAI scorer returns a labeled positive/negative/neutral distribution
+    directly (no positional/label-order assumption), so this is a directional sanity
+    check: each sentence must be dominated by its expected class with prob > 0.5.
     """
     revision = scorer.get_model_revision()  # warms the client + resolves revision
     sentences = list(settings.auditor.sanity_sentences)
     log.info(
-        "Audit A START: checking label mapping + %d sanity sentences on %s (rev=%s); "
+        "Audit A START: checking %d sanity sentences on %s (rev=%s); "
         "each sentence must be dominated by its expected class with prob > 0.5",
         len(sentences),
-        settings.model.name,
+        settings.sentiment.deployment,
         revision,
     )
     probs = scorer.score_texts([s["text"] for s in sentences])  # (n, 3) pos/neg/neu
@@ -159,8 +159,9 @@ def audit_b(ingested: pd.DataFrame) -> dict:
 
 
 def _score_through(ingested: pd.DataFrame) -> pd.DataFrame:
-    """Summarize then score — the same two agents the live pipeline uses, minus the
-    neutralizer, so the raw_score reflects only FinBERT's read of the summary."""
+    """Summarize then score — so the raw_score reflects only the LLM's read of each
+    summary. Deduplication is deliberately skipped here: Audit B compares the SAME
+    article named vs masked, and collapsing near-duplicates would blur that pairing."""
     return scorer.score(summarizer.summarize(ingested))
 
 

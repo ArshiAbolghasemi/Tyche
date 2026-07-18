@@ -159,10 +159,12 @@ class ModelConfig:
 @dataclass(frozen=True)
 class SummarizerConfig:
     """Agent 2 — abstractive summarizer (``facebook/bart-large-cnn`` via the hosted
-    ``InferenceClient.summarization``). ``max_length`` is kept well under FinBERT's
-    512-token limit so the summary is never silently truncated at scoring, while
-    ``min_length`` guards against over-compression that would drop information.
-    Beam search (no sampling) keeps output deterministic — important for Audit C.
+    ``InferenceClient.summarization``). Downstream, the summary is embedded with
+    ``BAAI/bge-m3`` (8192-token context) for dedup and read by the LLM sentiment
+    scorer — neither of which imposes FinBERT's old 512-token cap — so ``max_length``
+    can be larger, retaining more of the article. ``min_length`` still guards against
+    over-compression that would drop information. Beam search (no sampling) keeps
+    output deterministic — important for Audit C.
     """
 
     name: str = field(
@@ -175,10 +177,14 @@ class SummarizerConfig:
         default_factory=lambda: _env("TYCHE_SUMMARIZER_PROVIDER", "hf-inference")
     )
     min_length: int = field(
-        default_factory=lambda: _env("TYCHE_SUMMARIZER_MIN_LENGTH", 60, int)
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_MIN_LENGTH", 80, int)
     )
+    # Bumped from 200 → 512: the summary now feeds bge-m3 (8192-token context) and an
+    # LLM sentiment scorer, so it no longer has to fit FinBERT's 512-token window and
+    # can retain more of the article. Still well under bart-large-cnn's 1024-token
+    # generation limit.
     max_length: int = field(
-        default_factory=lambda: _env("TYCHE_SUMMARIZER_MAX_LENGTH", 200, int)
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_MAX_LENGTH", 512, int)
     )
     num_beams: int = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_NUM_BEAMS", 4, int)
@@ -200,6 +206,141 @@ class SummarizerConfig:
     # Concurrent hosted-API requests during summarization (thread pool; I/O bound).
     max_workers: int = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_MAX_WORKERS", 8, int)
+    )
+
+
+@dataclass(frozen=True)
+class EmbeddingConfig:
+    """Agent 3 — Embedder (``BAAI/bge-m3`` via the hosted ``InferenceClient``).
+
+    Summaries are embedded into dense vectors so near-duplicate articles can be
+    clustered and collapsed before the (paid) LLM sentiment call. bge-m3 has an
+    8192-token context window — comfortably larger than any summary the summarizer
+    emits — so summaries are embedded whole; ``max_tokens`` is only a defensive guard.
+    """
+
+    name: str = field(
+        default_factory=lambda: _env("TYCHE_EMBEDDING_NAME", "BAAI/bge-m3")
+    )
+    revision: str = field(
+        default_factory=lambda: _env("TYCHE_EMBEDDING_REVISION", "main")
+    )
+    provider: str = field(
+        default_factory=lambda: _env("TYCHE_EMBEDDING_PROVIDER", "hf-inference")
+    )
+    # bge-m3's context window; summaries never approach it, so this is a safety cap.
+    max_tokens: int = field(
+        default_factory=lambda: _env("TYCHE_EMBEDDING_MAX_TOKENS", 8192, int)
+    )
+    # Concurrent hosted feature-extraction requests (thread pool; I/O bound).
+    max_workers: int = field(
+        default_factory=lambda: _env("TYCHE_EMBEDDING_MAX_WORKERS", 8, int)
+    )
+
+
+@dataclass(frozen=True)
+class DedupConfig:
+    """Agent 4 — Deduplicator. Collapses near-duplicate summaries so each cluster of
+    reprints/syndications costs a single sentiment call.
+
+    News is deduplicated one calendar month at a time (``window``): within a month,
+    unique summaries are embedded, agglomeratively clustered by cosine distance, and
+    each cluster is represented by the member closest to the cluster centroid. Every
+    row inherits its cluster representative's summary, so downstream scoring is done
+    once per cluster and the score is shared across the cluster's members.
+    """
+
+    # Cosine-distance threshold for agglomerative clustering: members within this
+    # distance of each other are treated as the same story. Lower ⇒ stricter (fewer,
+    # tighter clusters); ~0.10–0.20 captures reprints without merging distinct stories.
+    distance_threshold: float = field(
+        default_factory=lambda: _env("TYCHE_DEDUP_DISTANCE_THRESHOLD", 0.15, float)
+    )
+    # Pandas period-frequency alias for the dedup window; "M" = calendar month.
+    window: str = field(default_factory=lambda: _env("TYCHE_DEDUP_WINDOW", "M"))
+
+
+_DEFAULT_SENTIMENT_SYSTEM_PROMPT = """\
+You are a senior financial-markets sentiment analyst. You read a short summary of a \
+news item about a specific publicly-traded company or security and judge its likely \
+sentiment IMPACT ON THAT SECURITY from the perspective of an investor holding it.
+
+Return a probability distribution over exactly three classes:
+- POSITIVE — the news is, on balance, favorable for the security (would tend to push \
+its price up or reflects improving fundamentals). Examples: earnings/revenue beats, \
+raised guidance, new large contracts, successful product launches, accretive M&A, \
+buybacks, analyst upgrades, resolved litigation in the company's favor.
+- NEGATIVE — the news is, on balance, unfavorable for the security (would tend to push \
+its price down or reflects deteriorating fundamentals). Examples: earnings/revenue \
+misses, cut or withdrawn guidance, profit warnings, regulatory penalties, lawsuits, \
+recalls, executive departures under pressure, downgrades, dilution, dividend cuts.
+- NEUTRAL — the news is factual/administrative with no clear directional implication, \
+is purely informational (scheduling, routine disclosures), is mixed with offsetting \
+positives and negatives, or does not actually concern the security's prospects.
+
+Guidelines:
+- Judge sentiment for the SECURITY/COMPANY, not the mood of the prose. "Shares fell on \
+profit-taking despite a strong quarter" still describes a strong quarter — weigh the \
+fundamental substance and the stated market reaction together.
+- Distinguish the company's OWN prospects from broad market/sector commentary that only \
+mentions it in passing; the latter leans NEUTRAL.
+- Forward-looking guidance and analyst actions usually dominate backward-looking figures.
+- Be calibrated: reserve high confidence (>0.8 in one class) for unambiguous news; when \
+signals conflict or are weak, spread probability mass and lean NEUTRAL.
+- The three probabilities must be non-negative and sum to 1.
+- Provide a single concise sentence of rationale citing the key driver.
+
+Respond ONLY via the structured schema you are given."""
+
+
+@dataclass(frozen=True)
+class SentimentConfig:
+    """Agent 5 — Sentiment scorer (Azure OpenAI ``gpt-4.0-mini`` via LangChain).
+
+    Replaces FinBERT: the deduplicated summary is sent to an Azure OpenAI chat model
+    with a comprehensive financial-sentiment system prompt, and the model returns
+    calibrated positive/negative/neutral probabilities (validated with pydantic,
+    retried with tenacity). ``endpoint``/``deployment``/``api_version`` reconstruct
+    the Azure REST URL; ``api_key`` must be supplied via env (never hardcoded).
+    """
+
+    endpoint: str = field(
+        default_factory=lambda: _env(
+            "TYCHE_SENTIMENT_ENDPOINT",
+            "https://zanistagpteastus2.openai.azure.com",
+        )
+    )
+    deployment: str = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_DEPLOYMENT", "gpt-4o-mini")
+    )
+    api_version: str = field(
+        default_factory=lambda: _env(
+            "TYCHE_SENTIMENT_API_VERSION", "2024-12-01-preview"
+        )
+    )
+    api_key: str = field(default_factory=lambda: _env("TYCHE_SENTIMENT_API_KEY", ""))
+    temperature: float = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_TEMPERATURE", 0.0, float)
+    )
+    # tenacity retry budget for transient Azure errors (rate limits, 5xx, timeouts).
+    max_retries: int = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_MAX_RETRIES", 5, int)
+    )
+    request_timeout: float = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_TIMEOUT", 60.0, float)
+    )
+    # Concurrent sentiment calls (thread pool; I/O bound). One call per unique cluster
+    # representative, so this is the effective sentiment-throughput knob.
+    max_workers: int = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_MAX_WORKERS", 8, int)
+    )
+    # The financial-sentiment system prompt sent with every scoring call. Overridable
+    # via env (e.g. to A/B a prompt variant) without a code change; defaults to the
+    # comprehensive prompt above.
+    system_prompt: str = field(
+        default_factory=lambda: _env(
+            "TYCHE_SENTIMENT_SYSTEM_PROMPT", _DEFAULT_SENTIMENT_SYSTEM_PROMPT
+        )
     )
 
 
@@ -338,6 +479,18 @@ class TycheSettings(Dynaconf):
     @property
     def summarizer(self) -> SummarizerConfig:
         return SummarizerConfig()
+
+    @property
+    def embedding(self) -> EmbeddingConfig:
+        return EmbeddingConfig()
+
+    @property
+    def dedup(self) -> DedupConfig:
+        return DedupConfig()
+
+    @property
+    def sentiment(self) -> SentimentConfig:
+        return SentimentConfig()
 
     @property
     def aggregation(self) -> AggregationConfig:
