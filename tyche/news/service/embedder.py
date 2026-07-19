@@ -28,6 +28,7 @@ from transformers import AutoModel, AutoTokenizer
 
 from tyche.common.config import settings
 from tyche.common.device import resolve_device
+from tyche.common.hf_loading import load_with_retry, release_device_memory
 from tyche.common.logging import get_logger
 
 log = get_logger(__name__)
@@ -38,7 +39,12 @@ def get_tokenizer():
     """bge-m3 tokenizer — shared with the Summarizer's length guard."""
     name = str(settings.embedding.name)
     revision = str(settings.embedding.revision)
-    tokenizer = AutoTokenizer.from_pretrained(name, revision=revision)
+    tokenizer = load_with_retry(
+        lambda: AutoTokenizer.from_pretrained(name, revision=revision),
+        name,
+        revision,
+        kind="embedding tokenizer",
+    )
     log.info("loaded tokenizer for %s", name)
     return tokenizer
 
@@ -59,7 +65,12 @@ def _get_model():
         revision,
     )
     t0 = time.monotonic()
-    model = AutoModel.from_pretrained(name, revision=revision)
+    model = load_with_retry(
+        lambda: AutoModel.from_pretrained(name, revision=revision),
+        name,
+        revision,
+        kind="embedding model",
+    )
     model.to(device)
     model.eval()
     log.info(
@@ -70,6 +81,14 @@ def _get_model():
         time.monotonic() - t0,
     )
     return model
+
+
+def unload_model() -> None:
+    """Release the embedding model from device memory. Call once ALL embedding work
+    for this run is done (the Deduplicator calls this after its whole per-month loop
+    finishes — not after each ``embed_texts()`` call, which would force a reload
+    every month and defeat the point of caching the loaded model)."""
+    release_device_memory(_get_device(), [_get_model])
 
 
 @lru_cache(maxsize=1)

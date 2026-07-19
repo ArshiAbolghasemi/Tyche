@@ -52,6 +52,7 @@ from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 from tyche.common.config import settings
 from tyche.common.device import resolve_device
+from tyche.common.hf_loading import load_with_retry, release_device_memory
 from tyche.common.logging import get_logger
 from tyche.news.records import Article, Summary
 from tyche.news.service.embedder import get_tokenizer as get_embedding_tokenizer
@@ -63,8 +64,13 @@ log = get_logger(__name__)
 def get_bart_tokenizer():
     """BART tokenizer — used both to chunk inputs to the model's token window and to
     decode generated summaries back to text."""
-    return AutoTokenizer.from_pretrained(
-        str(settings.summarizer.name), revision=str(settings.summarizer.revision)
+    name = str(settings.summarizer.name)
+    revision = str(settings.summarizer.revision)
+    return load_with_retry(
+        lambda: AutoTokenizer.from_pretrained(name, revision=revision),
+        name,
+        revision,
+        kind="summarizer tokenizer",
     )
 
 
@@ -84,7 +90,12 @@ def _get_model():
         revision,
     )
     t0 = time.monotonic()
-    model = AutoModelForSeq2SeqLM.from_pretrained(name, revision=revision)
+    model = load_with_retry(
+        lambda: AutoModelForSeq2SeqLM.from_pretrained(name, revision=revision),
+        name,
+        revision,
+        kind="summarizer model",
+    )
     model.to(device)
     model.eval()
     log.info(
@@ -95,6 +106,13 @@ def _get_model():
         time.monotonic() - t0,
     )
     return model
+
+
+def unload_model() -> None:
+    """Release the summarizer model from device memory. Call once this run's
+    summarization work is fully done (see ``summarize()``'s ``finally`` block) — not
+    after every batch, which would defeat the point of caching the loaded model."""
+    release_device_memory(_get_device(), [_get_model])
 
 
 @lru_cache(maxsize=1)
@@ -297,6 +315,10 @@ def summarize(ingested: pd.DataFrame) -> pd.DataFrame:
             )
             summaries = list(to_summarize)
             n_failed = len(to_summarize)
+        finally:
+            # This run's summarization work is done — free the device memory (CUDA/
+            # MPS) so other jobs sharing the GPU get it back, regardless of outcome.
+            unload_model()
         for text, summary in zip(to_summarize, summaries):
             cache[text] = summary or text
 

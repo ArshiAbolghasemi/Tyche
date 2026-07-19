@@ -143,10 +143,15 @@ def deduplicate(summarized: pd.DataFrame) -> pd.DataFrame:
         float(settings.dedup.distance_threshold),
     )
 
-    parts = [
-        _dedup_month(sub, pd.Period(month))
-        for month, sub in df.groupby(Dedup.month, sort=True)
-    ]
+    try:
+        parts = [
+            _dedup_month(sub, pd.Period(month))
+            for month, sub in df.groupby(Dedup.month, sort=True)
+        ]
+    finally:
+        # All months are done — free the embedder's device memory (CUDA/MPS) for
+        # other jobs. Unloading per-month would force a reload every month instead.
+        embedder.unload_model()
     out = pd.concat(parts).reindex(df.index)
 
     n_unique_before = out[Summary.text].nunique()
