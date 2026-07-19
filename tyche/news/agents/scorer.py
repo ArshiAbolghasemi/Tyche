@@ -31,6 +31,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+from tqdm import tqdm
 
 from tyche.common.config import settings
 from tyche.common.logging import get_logger
@@ -173,10 +174,19 @@ def _score_one(text: str) -> tuple[float, float, float, str]:
 def _score_unique(texts: list[str]) -> dict[str, tuple[float, float, float, str]]:
     """Score each unique text once, concurrently. Returns a text → triplet+rationale map."""
     max_workers = max(1, int(settings.sentiment.max_workers))
+    log.info(
+        "scoring %d unique summaries via Azure OpenAI (%d concurrent workers)",
+        len(texts),
+        max_workers,
+    )
     cache: dict[str, tuple[float, float, float, str]] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        for text, res in zip(texts, pool.map(_score_one, texts)):
+        results = tqdm(
+            pool.map(_score_one, texts), total=len(texts), desc="scorer", unit="summary"
+        )
+        for text, res in zip(texts, results):
             cache[text] = res
+    log.info("scored %d unique summaries via Azure OpenAI", len(texts))
     return cache
 
 

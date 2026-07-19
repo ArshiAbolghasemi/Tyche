@@ -42,10 +42,12 @@ Design guards
 
 from __future__ import annotations
 
+import time
 from functools import lru_cache
 
 import pandas as pd
 import torch
+from tqdm import tqdm
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 from tyche.common.config import settings
@@ -76,10 +78,22 @@ def _get_model():
     name = str(settings.summarizer.name)
     revision = str(settings.summarizer.revision)
     device = _get_device()
+    log.info(
+        "loading %s (rev=%s) — first run downloads weights, may take a while",
+        name,
+        revision,
+    )
+    t0 = time.monotonic()
     model = AutoModelForSeq2SeqLM.from_pretrained(name, revision=revision)
     model.to(device)
     model.eval()
-    log.info("loaded %s (rev=%s) onto device=%s", name, revision, device)
+    log.info(
+        "loaded %s (rev=%s) onto device=%s in %.1fs",
+        name,
+        revision,
+        device,
+        time.monotonic() - t0,
+    )
     return model
 
 
@@ -126,7 +140,9 @@ def _generate_parameters() -> dict:
     }
 
 
-def _generate_batch(texts: list[str], params: dict) -> list[str]:
+def _generate_batch(
+    texts: list[str], params: dict, progress_label: str = "summarizer"
+) -> list[str]:
     """Run local ``generate()`` over ``texts`` in device batches, returning one
     summary string per input (order preserved). Assumes each text already fits
     BART's token window (caller's responsibility — see ``_chunk_to_bart_limit``)."""
@@ -140,21 +156,23 @@ def _generate_batch(texts: list[str], params: dict) -> list[str]:
     max_tokens = int(settings.summarizer.max_tokens)
 
     out: list[str] = []
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        encoded = tokenizer(
-            batch,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=max_tokens,
-        ).to(device)
-        with torch.inference_mode():
-            generated_ids = model.generate(**encoded, **params)
-        out.extend(
-            tokenizer.decode(ids, skip_special_tokens=True).strip()
-            for ids in generated_ids
-        )
+    with tqdm(total=len(texts), desc=progress_label, unit="text") as pbar:
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            encoded = tokenizer(
+                batch,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=max_tokens,
+            ).to(device)
+            with torch.inference_mode():
+                generated_ids = model.generate(**encoded, **params)
+            out.extend(
+                tokenizer.decode(ids, skip_special_tokens=True).strip()
+                for ids in generated_ids
+            )
+            pbar.update(len(batch))
     return out
 
 
@@ -195,12 +213,23 @@ def _summarize_batch(texts: list[str], params: dict) -> list[str]:
     pending_idx = list(range(len(texts)))
     pending_text = list(texts)
     results: list[str] = [""] * len(texts)
+    round_num = 0
 
     while pending_idx:
+        round_num += 1
         chunks, owners, n_chunks = _pack_chunks(pending_text)
-        chunk_summaries = _generate_batch(chunks, params)
+        log.info(
+            "summarizer round %d: %d texts pending → %d chunks to generate",
+            round_num,
+            len(pending_text),
+            len(chunks),
+        )
+        chunk_summaries = _generate_batch(
+            chunks, params, progress_label=f"summarizer round {round_num}"
+        )
         reduced = _join_by_owner(owners, chunk_summaries, len(pending_text))
 
+        texts_before_round = len(pending_text)
         next_idx: list[int] = []
         next_text: list[str] = []
         for orig_idx, source_text, red, n in zip(
@@ -212,6 +241,12 @@ def _summarize_batch(texts: list[str], params: dict) -> list[str]:
                 next_idx.append(orig_idx)
                 next_text.append(red or source_text)
         pending_idx, pending_text = next_idx, next_text
+        log.info(
+            "summarizer round %d complete: %d texts finalized, %d carried to next round",
+            round_num,
+            texts_before_round - len(pending_idx),
+            len(pending_idx),
+        )
 
     return results
 

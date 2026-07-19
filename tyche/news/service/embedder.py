@@ -17,11 +17,13 @@ The tokenizer is shared with the Summarizer's ``summary_n_tokens`` diagnostic.
 
 from __future__ import annotations
 
+import time
 from functools import lru_cache
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from tyche.common.config import settings
@@ -51,10 +53,22 @@ def _get_model():
     name = str(settings.embedding.name)
     revision = str(settings.embedding.revision)
     device = _get_device()
+    log.info(
+        "loading %s (rev=%s) — first run downloads weights, may take a while",
+        name,
+        revision,
+    )
+    t0 = time.monotonic()
     model = AutoModel.from_pretrained(name, revision=revision)
     model.to(device)
     model.eval()
-    log.info("loaded %s (rev=%s) onto device=%s", name, revision, device)
+    log.info(
+        "loaded %s (rev=%s) onto device=%s in %.1fs",
+        name,
+        revision,
+        device,
+        time.monotonic() - t0,
+    )
     return model
 
 
@@ -109,8 +123,10 @@ def embed_texts(texts: list[str]) -> np.ndarray:
         _get_device(),
         batch_size,
     )
-    batches = [
-        _embed_batch(texts[i : i + batch_size])
-        for i in range(0, len(texts), batch_size)
-    ]
+    batches: list[np.ndarray] = []
+    with tqdm(total=len(texts), desc="embedder", unit="text") as pbar:
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i : i + batch_size]
+            batches.append(_embed_batch(batch))
+            pbar.update(len(batch))
     return np.vstack(batches)
