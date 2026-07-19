@@ -1,64 +1,68 @@
 """Agent 3 — Embedder. Summary text → dense ``BAAI/bge-m3`` embedding.
 
-The embedder is a thin, weights-free wrapper over the hosted HuggingFace
-``InferenceClient.feature_extraction`` (provider ``hf-inference``). It exists so the
-Deduplicator can cluster near-duplicate summaries by cosine distance before the
-(paid) LLM sentiment call, collapsing reprints/syndications to one representative.
+Weights are loaded directly onto a local device (CPU/CUDA/MPS, see
+``tyche.common.device``) — no hosted API call — so embedding throughput is bounded by
+local hardware, not an external rate limit. It exists so the Deduplicator can cluster
+near-duplicate summaries by cosine distance before the (paid) LLM sentiment call,
+collapsing reprints/syndications to one representative.
+
+The dense embedding follows bge-m3's documented pooling: the CLS token of the last
+hidden state, L2-normalized — so cosine similarity between two embeddings is a plain
+dot product, exactly what the Deduplicator's cosine-distance clustering assumes.
 
 bge-m3 has an 8192-token context window — larger than any summary the Summarizer
-emits — so summaries are embedded whole; the cached tokenizer is used only for a
-defensive length guard (mirroring the FinBERT token-guard pattern the Scorer used to
-own) and is shared with the Summarizer's ``summary_n_tokens`` count.
+emits — so summaries are embedded whole (truncation only guards pathological inputs).
+The tokenizer is shared with the Summarizer's ``summary_n_tokens`` diagnostic.
 """
 
 from __future__ import annotations
 
-import os
-from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import numpy as np
-from huggingface_hub import HfApi, InferenceClient
-from transformers import AutoTokenizer
+import torch
+import torch.nn.functional as F
+from transformers import AutoModel, AutoTokenizer
 
 from tyche.common.config import settings
+from tyche.common.device import resolve_device
 from tyche.common.logging import get_logger
 
 log = get_logger(__name__)
 
 
 @lru_cache(maxsize=1)
-def _get_client() -> InferenceClient:
-    token = os.environ.get("HF_TOKEN", "")
-    if not token:
-        raise RuntimeError(
-            "HF_TOKEN is not set — the bge-m3 embedding InferenceClient needs a "
-            "HuggingFace API token. Export it (export HF_TOKEN=...) or put it in "
-            "tyche/common/.secrets.toml."
-        )
-    provider = str(settings.embedding.provider)
-    client = InferenceClient(provider=provider, api_key=token)
-    log.info(
-        "embedder InferenceClient ready (provider=%s, model=%s)",
-        provider,
-        settings.embedding.name,
-    )
-    return client
-
-
-@lru_cache(maxsize=1)
 def get_tokenizer():
-    """bge-m3 tokenizer (weights-free) — shared with the Summarizer's length guard."""
+    """bge-m3 tokenizer — shared with the Summarizer's length guard."""
     name = str(settings.embedding.name)
     revision = str(settings.embedding.revision)
     tokenizer = AutoTokenizer.from_pretrained(name, revision=revision)
-    log.info("loaded tokenizer for %s (token-guard only)", name)
+    log.info("loaded tokenizer for %s", name)
     return tokenizer
+
+
+@lru_cache(maxsize=1)
+def _get_device() -> torch.device:
+    return resolve_device(str(settings.embedding.device))
+
+
+@lru_cache(maxsize=1)
+def _get_model():
+    name = str(settings.embedding.name)
+    revision = str(settings.embedding.revision)
+    device = _get_device()
+    model = AutoModel.from_pretrained(name, revision=revision)
+    model.to(device)
+    model.eval()
+    log.info("loaded %s (rev=%s) onto device=%s", name, revision, device)
+    return model
 
 
 @lru_cache(maxsize=1)
 def get_embedding_revision() -> str:
     """Frozen embedding-model revision (commit hash) for reproducibility / logging."""
+    from huggingface_hub import HfApi
+
     name = str(settings.embedding.name)
     revision = str(settings.embedding.revision)
     try:
@@ -68,49 +72,45 @@ def get_embedding_revision() -> str:
         return revision
 
 
-def _truncate_to_limit(text: str) -> str:
-    """Defensive guard: hard-cut a text to bge-m3's context window so the hosted
-    endpoint never silently truncates. Summaries never approach 8192 tokens, so this
-    effectively never fires — it only protects against pathological inputs."""
-    max_tokens = int(settings.embedding.max_tokens)
+def _embed_batch(texts: list[str]) -> np.ndarray:
+    """Embed one batch of texts on the local device: CLS-pool the last hidden state
+    and L2-normalize, per bge-m3's documented dense-embedding recipe."""
     tokenizer = get_tokenizer()
-    ids = tokenizer.encode(text, add_special_tokens=True)
-    if len(ids) <= max_tokens:
-        return text
-    kept = tokenizer.encode(text, add_special_tokens=False)[: max_tokens - 2]
-    return tokenizer.decode(kept)
+    model = _get_model()
+    device = _get_device()
+    max_tokens = int(settings.embedding.max_tokens)
 
-
-def _embed_one(text: str) -> np.ndarray:
-    """Embed a single text into a 1-D float32 vector via the hosted endpoint."""
-    client = _get_client()
-    model = str(settings.embedding.name)
-    raw = client.feature_extraction(_truncate_to_limit(text), model=model)
-    vec = np.asarray(raw, dtype=np.float32)
-    # feature_extraction may return (dim,) or (tokens, dim); mean-pool the latter.
-    if vec.ndim > 1:
-        vec = vec.mean(axis=tuple(range(vec.ndim - 1)))
-    return vec.ravel()
+    encoded = tokenizer(
+        texts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=max_tokens,
+    ).to(device)
+    with torch.inference_mode():
+        output = model(**encoded)
+    cls = output.last_hidden_state[:, 0]
+    normalized = F.normalize(cls, p=2, dim=1)
+    return normalized.cpu().numpy().astype(np.float32)
 
 
 def embed_texts(texts: list[str]) -> np.ndarray:
-    """Embed a list of texts concurrently, returning an ``(n, dim)`` float32 array.
-
-    Order is preserved (results are written back by index), so the embedding of
-    ``texts[i]`` is always row ``i`` regardless of completion order."""
+    """Embed a list of texts on the local device, batched for throughput. Order is
+    preserved: row ``i`` of the result is the embedding of ``texts[i]``."""
     if not texts:
         return np.zeros((0, 0), dtype=np.float32)
 
-    max_workers = max(1, int(settings.embedding.max_workers))
+    batch_size = max(1, int(settings.embedding.batch_size))
     log.info(
-        "embedding %d texts with %s (rev=%s, %d workers)",
+        "embedding %d texts with %s (rev=%s) on device=%s (batch_size=%d)",
         len(texts),
         settings.embedding.name,
         get_embedding_revision(),
-        max_workers,
+        _get_device(),
+        batch_size,
     )
-    vectors: list[np.ndarray | None] = [None] * len(texts)
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        for i, vec in zip(range(len(texts)), pool.map(_embed_one, texts)):
-            vectors[i] = vec
-    return np.vstack(vectors)
+    batches = [
+        _embed_batch(texts[i : i + batch_size])
+        for i in range(0, len(texts), batch_size)
+    ]
+    return np.vstack(batches)

@@ -102,13 +102,16 @@ class ModelConfig:
 
 @dataclass(frozen=True)
 class SummarizerConfig:
-    """Agent 2 — abstractive summarizer (``facebook/bart-large-cnn`` via the hosted
-    ``InferenceClient.summarization``). Downstream, the summary is embedded with
-    ``BAAI/bge-m3`` (8192-token context) for dedup and read by the LLM sentiment
-    scorer — neither of which imposes FinBERT's old 512-token cap — so ``max_length``
-    can be larger, retaining more of the article. ``min_length`` still guards against
-    over-compression that would drop information. Beam search (no sampling) keeps
-    output deterministic — important for Audit C.
+    """Agent 2 — abstractive summarizer. Weights for ``facebook/bart-large-cnn`` are
+    loaded directly onto a local device (CPU/CUDA/MPS) — no hosted API call — so
+    throughput is bounded by local hardware, not an external rate limit.
+
+    Downstream, the summary is embedded with ``BAAI/bge-m3`` (8192-token context) for
+    dedup and read by the LLM sentiment scorer — neither of which imposes FinBERT's
+    old 512-token cap — so ``max_length`` can be larger, retaining more of the
+    article. ``min_length`` still guards against over-compression that would drop
+    information. Beam search (no sampling) keeps output deterministic — important
+    for Audit C.
     """
 
     name: str = field(
@@ -117,9 +120,8 @@ class SummarizerConfig:
     revision: str = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_REVISION", "main")
     )
-    provider: str = field(
-        default_factory=lambda: _env("TYCHE_SUMMARIZER_PROVIDER", "hf-inference")
-    )
+    # "cpu" | "cuda" | "cuda:N" | "mps" | "auto" (auto picks CUDA > MPS > CPU).
+    device: str = field(default_factory=lambda: _env("TYCHE_SUMMARIZER_DEVICE", "auto"))
     min_length: int = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_MIN_LENGTH", 80, int)
     )
@@ -136,8 +138,8 @@ class SummarizerConfig:
     length_penalty: float = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_LENGTH_PENALTY", 2.0, float)
     )
-    # Below this many words the source is already short — score it verbatim and
-    # skip the summarization API call entirely.
+    # Below this many words the source is already short — pass it through verbatim
+    # and skip the model call entirely.
     min_words_to_summarize: int = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_MIN_WORDS", 80, int)
     )
@@ -147,20 +149,24 @@ class SummarizerConfig:
     max_tokens: int = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_MAX_TOKENS", 1024, int)
     )
-    # Concurrent hosted-API requests during summarization (thread pool; I/O bound).
-    max_workers: int = field(
-        default_factory=lambda: _env("TYCHE_SUMMARIZER_MAX_WORKERS", 8, int)
+    # Local generate() batch size — the GPU-throughput knob now that inference runs
+    # on-device instead of over a thread pool of hosted API calls.
+    batch_size: int = field(
+        default_factory=lambda: _env("TYCHE_SUMMARIZER_BATCH_SIZE", 8, int)
     )
 
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
-    """Agent 3 — Embedder (``BAAI/bge-m3`` via the hosted ``InferenceClient``).
+    """Agent 3 — Embedder. Weights for ``BAAI/bge-m3`` are loaded directly onto a
+    local device (CPU/CUDA/MPS) — no hosted API call.
 
     Summaries are embedded into dense vectors so near-duplicate articles can be
     clustered and collapsed before the (paid) LLM sentiment call. bge-m3 has an
     8192-token context window — comfortably larger than any summary the summarizer
     emits — so summaries are embedded whole; ``max_tokens`` is only a defensive guard.
+    The dense embedding is CLS-token pooling + L2 normalization (bge-m3's documented
+    pooling), so cosine similarity is a plain dot product on the returned vectors.
     """
 
     name: str = field(
@@ -169,16 +175,16 @@ class EmbeddingConfig:
     revision: str = field(
         default_factory=lambda: _env("TYCHE_EMBEDDING_REVISION", "main")
     )
-    provider: str = field(
-        default_factory=lambda: _env("TYCHE_EMBEDDING_PROVIDER", "hf-inference")
-    )
+    # "cpu" | "cuda" | "cuda:N" | "mps" | "auto" (auto picks CUDA > MPS > CPU).
+    device: str = field(default_factory=lambda: _env("TYCHE_EMBEDDING_DEVICE", "auto"))
     # bge-m3's context window; summaries never approach it, so this is a safety cap.
     max_tokens: int = field(
         default_factory=lambda: _env("TYCHE_EMBEDDING_MAX_TOKENS", 8192, int)
     )
-    # Concurrent hosted feature-extraction requests (thread pool; I/O bound).
-    max_workers: int = field(
-        default_factory=lambda: _env("TYCHE_EMBEDDING_MAX_WORKERS", 8, int)
+    # Local forward-pass batch size — the GPU-throughput knob now that inference runs
+    # on-device instead of over a thread pool of hosted API calls.
+    batch_size: int = field(
+        default_factory=lambda: _env("TYCHE_EMBEDDING_BATCH_SIZE", 32, int)
     )
 
 

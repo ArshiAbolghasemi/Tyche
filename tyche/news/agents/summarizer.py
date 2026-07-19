@@ -2,18 +2,19 @@
 
 Replaces the old sentence-Segmentation stage. Instead of exploding an article into
 sentence spans, we compress the whole article to a short summary with
-``facebook/bart-large-cnn`` (hosted ``InferenceClient.summarization``) and hand that
-single summary to the Scorer — so there is one FinBERT score per (article, ticker)
-and no downstream aggregation.
+``facebook/bart-large-cnn`` — weights loaded directly onto a local device
+(CPU/CUDA/MPS, see ``tyche.common.device``) — and hand that single summary to the
+Embedder/Scorer, so there is one sentiment score per (article, ticker) and no
+downstream aggregation.
 
-Runs through the hosted InferenceClient (no local model weights). The endpoint does
-NOT truncate over-long inputs itself and crashes on BART's 1024-token
-positional-embedding limit ("index out of range in self"). ~35% of articles in this
-corpus exceed that limit (some by 8x), so instead of truncating them down to the lead
-paragraph, over-long articles are handled by **map-reduce summarization**: split into
-sequential ≤1024-token chunks, summarize each chunk, then summarize the concatenation
-of chunk-summaries down to the target length. This preserves information from the
-whole article instead of only the first ~700 words.
+BART's positional embeddings cap the input at 1024 tokens; the local ``generate()``
+call does not truncate for us any more gracefully than a hosted endpoint would
+("index out of range in self" on overflow). ~35% of articles in this corpus exceed
+that limit (some by 8x), so instead of truncating to the lead paragraph, over-long
+articles are handled by **map-reduce summarization**: split into sequential
+≤1024-token chunks, summarize each chunk, then summarize the concatenation of
+chunk-summaries down to the target length. This preserves information from the whole
+article instead of only the first ~700 words.
 
 Design guards
 -------------
@@ -25,69 +26,68 @@ Design guards
   512-token window and can retain more of the article; a bge-m3-tokenizer length guard
   in the Embedder is the belt-and-braces backstop.
 * ``min_length`` protects against over-compression that would drop information.
-* Beam search with no sampling (``do_sample`` is not exposed by the endpoint, but
-  omitting temperature/top_p keeps it deterministic) → the same article always yields
-  the same summary, preserving Audit C's causal (bit-for-bit) invariance. Identical
-  ``full_text`` is summarized once and reused, so the multi-ticker fan-out costs one
-  round of API calls.
+* Beam search with no sampling (``do_sample=False``) keeps output deterministic → the
+  same article always yields the same summary, preserving Audit C's causal
+  (bit-for-bit) invariance. Identical ``full_text`` is summarized once and reused, so
+  the multi-ticker fan-out costs no extra model calls.
 * Short articles (< ``min_words_to_summarize``) are already digestible — they are
-  passed through verbatim, skipping the API call.
-* Unique articles are summarized concurrently (thread pool; the work is I/O-bound
-  API calls) — order-independent, so it doesn't affect Audit C's causal guarantee,
-  which is about time ordering of the OUTPUT, not the order requests are issued in.
+  passed through verbatim, skipping the model entirely.
+* Summarization runs in local batches (config ``batch_size``) instead of a
+  per-article thread pool — the work is now GPU/CPU compute, not I/O, so batching
+  many chunks into one ``generate()`` call is what actually uses the device
+  efficiently. Batches are built across ALL unique articles' chunks at once, and the
+  (rare) reduce pass for many-chunk articles is itself re-batched, converging in
+  typically one extra round since chunk-summaries are much shorter than raw text.
 """
 
 from __future__ import annotations
 
-import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 
 import pandas as pd
-from huggingface_hub import HfApi, InferenceClient
-from huggingface_hub.inference._generated.types import SummarizationOutput
-from huggingface_hub.inference._providers import get_provider_helper
-from transformers import AutoTokenizer
+import torch
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
 from tyche.common.config import settings
+from tyche.common.device import resolve_device
 from tyche.common.logging import get_logger
-from tyche.news.service.embedder import get_tokenizer
 from tyche.news.records import Article, Summary
+from tyche.news.service.embedder import get_tokenizer as get_embedding_tokenizer
 
 log = get_logger(__name__)
 
 
 @lru_cache(maxsize=1)
-def _get_client() -> InferenceClient:
-    token = os.environ.get("HF_TOKEN", "")
-    if not token:
-        raise RuntimeError(
-            "HF_TOKEN is not set — the summarization InferenceClient needs a "
-            "HuggingFace API token. Export it (export HF_TOKEN=...) or put it in "
-            "tyche/common/.secrets.toml."
-        )
-    provider = str(settings.summarizer.provider)
-    client = InferenceClient(provider=provider, api_key=token)
-    log.info(
-        "summarizer InferenceClient ready (provider=%s, model=%s)",
-        provider,
-        settings.summarizer.name,
-    )
-    return client
-
-
-@lru_cache(maxsize=1)
-def _get_bart_tokenizer():
-    """Weights-free BART tokenizer, used only to truncate inputs before they're sent
-    to the hosted endpoint (mirrors the FinBERT token-guard pattern in the scorer)."""
+def get_bart_tokenizer():
+    """BART tokenizer — used both to chunk inputs to the model's token window and to
+    decode generated summaries back to text."""
     return AutoTokenizer.from_pretrained(
         str(settings.summarizer.name), revision=str(settings.summarizer.revision)
     )
 
 
 @lru_cache(maxsize=1)
+def _get_device() -> torch.device:
+    return resolve_device(str(settings.summarizer.device))
+
+
+@lru_cache(maxsize=1)
+def _get_model():
+    name = str(settings.summarizer.name)
+    revision = str(settings.summarizer.revision)
+    device = _get_device()
+    model = AutoModelForSeq2SeqLM.from_pretrained(name, revision=revision)
+    model.to(device)
+    model.eval()
+    log.info("loaded %s (rev=%s) onto device=%s", name, revision, device)
+    return model
+
+
+@lru_cache(maxsize=1)
 def get_summarizer_revision() -> str:
     """Frozen summarizer revision (commit hash) for reproducibility / logging."""
+    from huggingface_hub import HfApi
+
     name = str(settings.summarizer.name)
     revision = str(settings.summarizer.revision)
     try:
@@ -107,7 +107,7 @@ def _chunk_to_bart_limit(text: str) -> list[str]:
     boundary effects at chunk edges). ``-8`` covers both without meaningfully
     shrinking chunks."""
     max_tokens = int(settings.summarizer.max_tokens)
-    tokenizer = _get_bart_tokenizer()
+    tokenizer = get_bart_tokenizer()
     ids = tokenizer.encode(text, add_special_tokens=False)
     budget = max_tokens - 8
     if len(ids) <= budget:
@@ -122,61 +122,98 @@ def _generate_parameters() -> dict:
         "max_length": int(cfg.max_length),
         "num_beams": int(cfg.num_beams),
         "length_penalty": float(cfg.length_penalty),
+        "do_sample": False,  # deterministic — required for Audit C's causal invariance
     }
 
 
-def _call_summarization_api(text: str, parameters: dict) -> str:
-    """One hosted-API summarization call. Assumes ``text`` already fits BART's token
-    window (caller's responsibility — see ``_chunk_to_bart_limit``).
+def _generate_batch(texts: list[str], params: dict) -> list[str]:
+    """Run local ``generate()`` over ``texts`` in device batches, returning one
+    summary string per input (order preserved). Assumes each text already fits
+    BART's token window (caller's responsibility — see ``_chunk_to_bart_limit``)."""
+    if not texts:
+        return []
 
-    ``InferenceClient.summarization`` nests the generation args under a
-    ``generate_parameters`` key that the hf-inference (transformers) backend rejects
-    ("model_kwargs not used"). We reproduce the client's own request path but pass the
-    generation args FLAT under ``parameters`` — which is what the summarization
-    pipeline actually expects.
-    """
-    client = _get_client()
-    model = str(settings.summarizer.name)
-    helper = get_provider_helper(client.provider, task="summarization", model=model)
-    request = helper.prepare_request(
-        inputs=text,
-        parameters=parameters,
-        headers=client.headers,
-        model=model,
-        api_key=client.token,
-    )
-    response = client._inner_post(request)
-    out = SummarizationOutput.parse_obj_as_list(response)[0]
-    return (out.summary_text or "").strip()
+    tokenizer = get_bart_tokenizer()
+    model = _get_model()
+    device = _get_device()
+    batch_size = max(1, int(settings.summarizer.batch_size))
+    max_tokens = int(settings.summarizer.max_tokens)
+
+    out: list[str] = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        encoded = tokenizer(
+            batch,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_tokens,
+        ).to(device)
+        with torch.inference_mode():
+            generated_ids = model.generate(**encoded, **params)
+        out.extend(
+            tokenizer.decode(ids, skip_special_tokens=True).strip()
+            for ids in generated_ids
+        )
+    return out
 
 
-def _summarize_one(text: str) -> str:
-    """Summarize a single article. Short inputs pass through verbatim (no API call).
+def _pack_chunks(texts: list[str]) -> tuple[list[str], list[int], list[int]]:
+    """Chunk each text to BART's token window.
 
-    Articles that fit BART's token window are summarized in one call. Longer articles
-    are map-reduced: each ≤1024-token chunk is summarized independently (map), then
-    the concatenation of chunk-summaries is summarized down to the target length
-    (reduce) — preserving information from the whole article instead of truncating
-    to the lead."""
-    if len(text.split()) < int(settings.summarizer.min_words_to_summarize):
-        return text
+    Returns ``(flat_chunks, owner_index_per_chunk, n_chunks_per_text)`` — the flat
+    chunk list is what actually gets batched through the model; ``owner_index``
+    reassembles chunk summaries back into per-text groups afterward."""
+    owners: list[int] = []
+    chunks: list[str] = []
+    n_chunks: list[int] = []
+    for i, text in enumerate(texts):
+        text_chunks = _chunk_to_bart_limit(text)
+        n_chunks.append(len(text_chunks))
+        owners.extend([i] * len(text_chunks))
+        chunks.extend(text_chunks)
+    return chunks, owners, n_chunks
 
-    chunks = _chunk_to_bart_limit(text)
-    params = _generate_parameters()
 
-    if len(chunks) == 1:
-        summary = _call_summarization_api(chunks[0], params)
-        return summary or text  # never emit empty text to the scorer
+def _join_by_owner(owners: list[int], values: list[str], n: int) -> list[str]:
+    """Concatenate chunk summaries back into one string per original text (of ``n``
+    texts), in chunk order."""
+    buckets: list[list[str]] = [[] for _ in range(n)]
+    for owner, value in zip(owners, values):
+        if value:
+            buckets[owner].append(value)
+    return [" ".join(b) for b in buckets]
 
-    chunk_summaries = [_call_summarization_api(c, params) for c in chunks]
-    combined = " ".join(s for s in chunk_summaries if s)
-    if not combined:
-        return text
-    # The reduce pass may itself exceed the token window for very long articles with
-    # many chunks; recurse (chunk-summaries are much shorter than raw text, so this
-    # converges quickly — typically one extra pass).
-    reduced = _summarize_one(combined)
-    return reduced or combined
+
+def _summarize_batch(texts: list[str], params: dict) -> list[str]:
+    """Map-reduce summarize a batch of texts, each of which may exceed BART's token
+    window. Every round batches ALL pending texts' chunks into shared ``generate()``
+    calls; texts whose chunk-summaries still need reducing (i.e. had >1 chunk) carry
+    forward to the next round. Converges quickly since chunk-summaries are far
+    shorter than the raw text they replace — typically one extra round for even the
+    longest articles."""
+    pending_idx = list(range(len(texts)))
+    pending_text = list(texts)
+    results: list[str] = [""] * len(texts)
+
+    while pending_idx:
+        chunks, owners, n_chunks = _pack_chunks(pending_text)
+        chunk_summaries = _generate_batch(chunks, params)
+        reduced = _join_by_owner(owners, chunk_summaries, len(pending_text))
+
+        next_idx: list[int] = []
+        next_text: list[str] = []
+        for orig_idx, source_text, red, n in zip(
+            pending_idx, pending_text, reduced, n_chunks
+        ):
+            if n <= 1:
+                results[orig_idx] = red or source_text  # never emit empty text
+            else:
+                next_idx.append(orig_idx)
+                next_text.append(red or source_text)
+        pending_idx, pending_text = next_idx, next_text
+
+    return results
 
 
 def summarize(ingested: pd.DataFrame) -> pd.DataFrame:
@@ -188,65 +225,59 @@ def summarize(ingested: pd.DataFrame) -> pd.DataFrame:
         out[Summary.n_tokens] = pd.Series(dtype="int")
         return out
 
-    tokenizer = get_tokenizer()  # bge-m3 tokenizer — the summary's downstream consumer
-    max_workers = max(1, int(settings.summarizer.max_workers))
+    # bge-m3 tokenizer — the summary's downstream consumer — used only for the final
+    # token-count diagnostic below.
+    embedding_tokenizer = get_embedding_tokenizer()
+
+    unique_texts = ingested[Article.full_text].dropna().unique().tolist()
+    min_words = int(settings.summarizer.min_words_to_summarize)
+    to_summarize = [t for t in unique_texts if len(t.split()) >= min_words]
+    passthrough_texts = [t for t in unique_texts if len(t.split()) < min_words]
+
     log.info(
-        "summarizing %d rows with %s (rev=%s) params=%s (chunk limit %d BART tokens, "
-        "%d concurrent workers)",
+        "summarizing %d unique articles (%d passthrough short articles) across %d "
+        "(article, ticker) rows with %s (rev=%s) on device=%s, params=%s "
+        "(chunk limit %d BART tokens, batch_size=%d)",
+        len(to_summarize),
+        len(passthrough_texts),
         len(ingested),
         settings.summarizer.name,
         get_summarizer_revision(),
+        _get_device(),
         _generate_parameters(),
         settings.summarizer.max_tokens,
-        max_workers,
+        settings.summarizer.batch_size,
     )
 
-    unique_texts = ingested[Article.full_text].dropna().unique().tolist()
-    log.info(
-        "%d unique articles across %d (article, ticker) rows — summarizing uniques "
-        "concurrently (%d workers)",
-        len(unique_texts),
-        len(ingested),
-        max_workers,
-    )
-
-    cache: dict[str, str] = {}
-    n_passthrough = 0
+    cache: dict[str, str] = {t: t for t in passthrough_texts}
     n_failed = 0
-    done = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        future_to_text = {pool.submit(_summarize_one, t): t for t in unique_texts}
-        for future in as_completed(future_to_text):
-            text = future_to_text[future]
-            try:
-                summary = future.result()
-            except Exception:
-                log.exception(
-                    "summarization failed for one article (len=%d chars) — "
-                    "falling back to verbatim text",
-                    len(text),
-                )
-                summary = text
-                n_failed += 1
-            if summary == text:
-                n_passthrough += 1
-            cache[text] = summary
-            done += 1
-            if done % 25 == 0 or done == len(unique_texts):
-                log.info("summarized %d/%d unique articles", done, len(unique_texts))
+    if to_summarize:
+        try:
+            summaries = _summarize_batch(to_summarize, _generate_parameters())
+        except Exception:
+            log.exception(
+                "batch summarization failed for %d articles — falling back to "
+                "verbatim text for all of them",
+                len(to_summarize),
+            )
+            summaries = list(to_summarize)
+            n_failed = len(to_summarize)
+        for text, summary in zip(to_summarize, summaries):
+            cache[text] = summary or text
 
     out = ingested.copy()
     out[Summary.text] = out[Article.full_text].map(cache).fillna("")
     out[Summary.n_tokens] = [
-        len(tokenizer.encode(s, add_special_tokens=True)) for s in out[Summary.text]
+        len(embedding_tokenizer.encode(s, add_special_tokens=True))
+        for s in out[Summary.text]
     ]
     over = int((out[Summary.n_tokens] > int(settings.embedding.max_tokens)).sum())
     log.info(
-        "summarized %d rows (%d passthrough short articles, %d API failures "
-        "fell back to verbatim); summary tokens min=%d mean=%.1f max=%d; %d over "
-        "bge-m3's %d-token limit (embedder will guard)",
+        "summarized %d rows (%d passthrough short articles, %d batch failures fell "
+        "back to verbatim); summary tokens min=%d mean=%.1f max=%d; %d over bge-m3's "
+        "%d-token limit (embedder will guard)",
         len(out),
-        n_passthrough,
+        len(passthrough_texts),
         n_failed,
         int(out[Summary.n_tokens].min()),
         float(out[Summary.n_tokens].mean()),
