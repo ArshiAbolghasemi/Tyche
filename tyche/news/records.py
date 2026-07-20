@@ -10,7 +10,7 @@ contract emitted per (article, ticker).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from enum import Enum
 
 
@@ -24,11 +24,6 @@ class SanityDirection(str, Enum):
     POS = "pos"
     NEG = "neg"
     NEU = "neu"
-
-
-def _columns(cls: type) -> list[str]:
-    """Return the column-string values of a column dataclass, in declaration order."""
-    return [str(f.default) for f in fields(cls)]
 
 
 # --- Agent 1 — Ingest output columns ---

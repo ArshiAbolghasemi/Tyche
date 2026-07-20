@@ -19,6 +19,8 @@ Otherwise the summarizer node runs, and it internally reuses any pre-existing
 
 from __future__ import annotations
 
+from langgraph.graph import END, START, StateGraph
+
 from tyche.news.agents import (
     auditor,
     deduplicator,
@@ -72,7 +74,6 @@ def _audit(state: PipelineState) -> dict:
 
 def build_graph():
     """Compile the DAG. Returns a runnable graph."""
-    from langgraph.graph import END, START, StateGraph
 
     graph = StateGraph(PipelineState)
     graph.add_node("ingest", _ingest)
