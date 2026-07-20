@@ -56,7 +56,7 @@ def _read_dask(path: str, nrows: int | None = None) -> pd.DataFrame:
     parquet).
     """
     if path.endswith(".parquet"):
-        ddf = dd.read_parquet(path)
+        ddf = dd.read_parquet(path, engine="pyarrow")
     else:
         ddf = dd.read_csv(path, dtype="string", blocksize=None)
 
