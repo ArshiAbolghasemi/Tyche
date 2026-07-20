@@ -1,5 +1,5 @@
 [core]
-    remote = tyche
-['remote "tyche"']
-    url = s3://tyche
+    remote = zanista
+['remote "zanista"']
+    url = s3://zanista
     endpointurl = https://c6492402f7b512380e1dc0e938a80799.r2.cloudflarestorage.com
