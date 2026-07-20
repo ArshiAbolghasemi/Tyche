@@ -57,7 +57,7 @@ def _env_list(key: str, default: list[str]) -> list[str]:
 @dataclass(frozen=True)
 class PathsConfig:
     input: str = field(
-        default_factory=lambda: _env("TYCHE_PATHS_INPUT", "data/eodhd/news.parquet")
+        default_factory=lambda: _env("TYCHE_PATHS_INPUT", "data/zanista/news.parquet")
     )
     output: str = field(
         default_factory=lambda: _env(

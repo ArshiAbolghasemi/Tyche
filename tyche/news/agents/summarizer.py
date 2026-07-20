@@ -270,8 +270,11 @@ def _summarize_batch(texts: list[str], params: dict) -> list[str]:
 
 
 def summarize(ingested: pd.DataFrame) -> pd.DataFrame:
-    """Add a ``summary_text`` column (one summary per row). Identical ``full_text``
-    is summarized once and reused across the ticker fan-out."""
+    """Add a ``summary_text`` column (one summary per row). Rows that already carry a
+    non-empty ``summary_text`` (e.g. the zanista source's pre-computed ``summary``
+    field, passed through as-is by ``ingest``) are used verbatim and never sent through
+    the model; only rows still missing one are generated from ``full_text``. Identical
+    ``full_text`` is summarized once and reused across the ticker fan-out."""
     if ingested.empty:
         out = ingested.copy()
         out[Summary.text] = pd.Series(dtype="string")
@@ -282,17 +285,26 @@ def summarize(ingested: pd.DataFrame) -> pd.DataFrame:
     # token-count diagnostic below.
     embedding_tokenizer = get_embedding_tokenizer()
 
-    unique_texts = ingested[Article.full_text].dropna().unique().tolist()
+    existing = (
+        ingested[Summary.text].fillna("")
+        if Summary.text in ingested.columns
+        else pd.Series("", index=ingested.index)
+    )
+    needs_summary = ingested.loc[existing == ""]
+    n_reused = len(ingested) - len(needs_summary)
+
+    unique_texts = needs_summary[Article.full_text].dropna().unique().tolist()
     min_words = int(settings.summarizer.min_words_to_summarize)
     to_summarize = [t for t in unique_texts if len(t.split()) >= min_words]
     passthrough_texts = [t for t in unique_texts if len(t.split()) < min_words]
 
     log.info(
-        "summarizing %d unique articles (%d passthrough short articles) across %d "
-        "(article, ticker) rows with %s (rev=%s) on device=%s, params=%s "
-        "(chunk limit %d BART tokens, batch_size=%d)",
+        "summarizing %d unique articles (%d passthrough short articles, %d rows "
+        "reusing a pre-existing summary) across %d (article, ticker) rows with %s "
+        "(rev=%s) on device=%s, params=%s (chunk limit %d BART tokens, batch_size=%d)",
         len(to_summarize),
         len(passthrough_texts),
+        n_reused,
         len(ingested),
         settings.summarizer.name,
         get_summarizer_revision(),
@@ -323,17 +335,19 @@ def summarize(ingested: pd.DataFrame) -> pd.DataFrame:
             cache[text] = summary or text
 
     out = ingested.copy()
-    out[Summary.text] = out[Article.full_text].map(cache).fillna("")
+    generated = out[Article.full_text].map(cache)
+    out[Summary.text] = existing.where(existing != "", generated).fillna("")
     out[Summary.n_tokens] = [
         len(embedding_tokenizer.encode(s, add_special_tokens=True))
         for s in out[Summary.text]
     ]
     over = int((out[Summary.n_tokens] > int(settings.embedding.max_tokens)).sum())
     log.info(
-        "summarized %d rows (%d passthrough short articles, %d batch failures fell "
-        "back to verbatim); summary tokens min=%d mean=%.1f max=%d; %d over bge-m3's "
-        "%d-token limit (embedder will guard)",
+        "summarized %d rows (%d reused pre-existing summaries, %d passthrough short "
+        "articles, %d batch failures fell back to verbatim); summary tokens min=%d "
+        "mean=%.1f max=%d; %d over bge-m3's %d-token limit (embedder will guard)",
         len(out),
+        n_reused,
         len(passthrough_texts),
         n_failed,
         int(out[Summary.n_tokens].min()),

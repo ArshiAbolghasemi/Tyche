@@ -25,13 +25,14 @@ import pandas as pd
 
 from tyche.common.config import settings
 from tyche.common.logging import get_logger
-from tyche.news.records import Article
+from tyche.news.records import Article, Summary
 
 log = get_logger(__name__)
 
 _SOURCE_COLUMNS = [
     "ticker",
     "name",
+    "Name",  # zanista source capitalizes the company-name column
     "exchange",
     "type",
     "isin",
@@ -39,6 +40,7 @@ _SOURCE_COLUMNS = [
     "title",
     "content",
     "symbols",
+    "summary",  # zanista source ships a pre-computed summary for ~35% of rows
 ]
 
 
@@ -112,15 +114,19 @@ def ingest(input_path: str | None = None, nrows: int | None = None) -> pd.DataFr
         if pd.isna(valid_time):
             continue
         exchange, itype = _clean(row.get("exchange")), _clean(row.get("type"))
+        name = _clean(row.get("name")) or _clean(row.get("Name"))
         group_key = ":".join(_clean(row.get(c)) or "NA" for c in group_cols)
         article_id = str(uuid.uuid1())  # one id per article, shared across its tickers
+        # Carried through as-is; the summarizer skips generation for rows where this
+        # is already non-empty and only summarizes the ones that need it.
+        existing_summary = _clean(row.get("summary"))
 
         for ticker in _parse_symbols(row.get("symbols"), _clean(row.get("ticker"))):
             rows.append(
                 {
                     Article.id: article_id,
                     Article.ticker: ticker,
-                    Article.name: _clean(row.get("name")),
+                    Article.name: name,
                     Article.exchange: exchange,
                     Article.type: itype,
                     Article.isin: _clean(row.get("isin")),
@@ -128,6 +134,7 @@ def ingest(input_path: str | None = None, nrows: int | None = None) -> pd.DataFr
                     Article.valid_time: valid_time.to_pydatetime(),
                     Article.transaction_time: now,
                     Article.full_text: text,
+                    Summary.text: existing_summary,
                 }
             )
 
