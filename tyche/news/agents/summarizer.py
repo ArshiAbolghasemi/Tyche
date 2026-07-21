@@ -49,6 +49,7 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+from huggingface_hub import HfApi
 
 from tyche.common.config import settings
 from tyche.common.device import resolve_device
@@ -118,7 +119,6 @@ def unload_model() -> None:
 @lru_cache(maxsize=1)
 def get_summarizer_revision() -> str:
     """Frozen summarizer revision (commit hash) for reproducibility / logging."""
-    from huggingface_hub import HfApi
 
     name = str(settings.summarizer.name)
     revision = str(settings.summarizer.revision)
