@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sortedcontainers import SortedList
 
 from tyche.common.config import settings
 from tyche.common.logging import get_logger
@@ -40,12 +41,41 @@ def load_entity_prior() -> dict:
     return json.loads(path.read_text())
 
 
-def _winsor_median(arr: np.ndarray) -> float:
-    if len(arr) == 0:
+def _quantile_from_sorted(window: SortedList, q: float) -> float:
+    """``np.quantile(..., method="linear")`` (the numpy default) read off an
+    already-sorted window: interpolate between the two order statistics
+    bracketing position ``q * (len - 1)``."""
+    pos = q * (len(window) - 1)
+    lo_idx = int(np.floor(pos))
+    hi_idx = int(np.ceil(pos))
+    lo_val, hi_val = window[lo_idx], window[hi_idx]
+    return lo_val + (pos - lo_idx) * (hi_val - lo_val)
+
+
+def _winsor_median_from_sorted(window: SortedList) -> float:
+    """Winsorized median of the window's values, computed in O(log n) by reading
+    order statistics off an already-sorted ``SortedList`` instead of clipping +
+    re-sorting a materialized array in O(n) (equivalent to
+    ``np.median(np.clip(arr, np.quantile(arr, lo_q), np.quantile(arr, hi_q)))`` for
+    ``arr = np.array(window)``).
+
+    Relies on clip-then-median commuting with order: ``clip`` is monotone
+    non-decreasing, so it doesn't change any element's rank — the k-th smallest
+    value of ``clip(x, lo, hi)`` is exactly ``clip`` applied to the k-th smallest
+    value of ``x``. So instead of clipping every element, only the (one or two)
+    order statistics that ``np.median`` actually reads need clipping."""
+    w = len(window)
+    if w == 0:
         return 0.0
-    lo = np.quantile(arr, float(settings.neutralizer.winsor_lo))
-    hi = np.quantile(arr, float(settings.neutralizer.winsor_hi))
-    return float(np.median(np.clip(arr, lo, hi)))
+    lo = _quantile_from_sorted(window, float(settings.neutralizer.winsor_lo))
+    hi = _quantile_from_sorted(window, float(settings.neutralizer.winsor_hi))
+    mid = (w - 1) / 2.0
+    lo_mid, hi_mid = int(np.floor(mid)), int(np.ceil(mid))
+    if lo_mid == hi_mid:
+        return float(np.clip(window[lo_mid], lo, hi))
+    return float(
+        (np.clip(window[lo_mid], lo, hi) + np.clip(window[hi_mid], lo, hi)) / 2.0
+    )
 
 
 def _trailing_location(
@@ -54,7 +84,22 @@ def _trailing_location(
     """Per-``key`` STRICTLY TRAILING winsorized-median location and obs count over a
     calendar window. For each row only rows with ``valid_time`` strictly earlier
     (``< t``, so same-timestamp rows are excluded too) within the window contribute
-    — the causal guarantee. Returns Series aligned to ``df.index``."""
+    -- the causal guarantee. Returns Series aligned to ``df.index``.
+
+    A two-pointer sliding window (not a per-row mask over the whole group) tracks
+    which rows are in-window: once a group is sorted by time, the set of rows
+    satisfying ``cutoff <= time < t`` is a contiguous range whose boundaries only
+    move forward as ``t`` increases, so both pointers advance monotonically across
+    the group. In-window values are kept in a ``SortedList`` (O(log w) insert/remove,
+    O(1) positional access) so ``_winsor_median_from_sorted`` reads the needed order
+    statistics in O(log w) instead of rebuilding + sorting a fresh array of size w on
+    every row. Net cost: O(group size x log(window size)) -- down from the naive
+    O(group size x window size), which was itself hiding behind an even worse
+    O(group size^2) boolean mask over the *whole* group on every row. That mask
+    approach is fine for small groups (e.g. per-ticker), but with one dominant group
+    -- e.g. every row sharing the same ``group_key`` because a source has no
+    exchange/type columns -- it was the difference between seconds and many hours.
+    Verified to reproduce the original mask-based version's output exactly."""
     window = np.timedelta64(int(settings.neutralizer.rolling_window_days), "D")
     loc = pd.Series(0.0, index=df.index)
     n = pd.Series(0.0, index=df.index)
@@ -63,11 +108,24 @@ def _trailing_location(
         times = sub[Article.valid_time].to_numpy()
         vals = sub[value_col].to_numpy()
         idxs = sub.index.to_numpy()
-        for j in range(len(sub)):
-            mask = (times < times[j]) & (times >= times[j] - window)
-            win = vals[mask]
-            n.loc[idxs[j]] = len(win)
-            loc.loc[idxs[j]] = _winsor_median(win)
+        m = len(sub)
+        group_loc = np.zeros(m)
+        group_n = np.zeros(m)
+        in_window: SortedList = SortedList()
+        lo_ptr = 0
+        hi_ptr = 0  # in_window == values for rows with cutoff <= time < times[j]
+        for j in range(m):
+            while hi_ptr < m and times[hi_ptr] < times[j]:
+                in_window.add(vals[hi_ptr])
+                hi_ptr += 1
+            cutoff = times[j] - window
+            while lo_ptr < hi_ptr and times[lo_ptr] < cutoff:
+                in_window.remove(vals[lo_ptr])
+                lo_ptr += 1
+            group_n[j] = len(in_window)
+            group_loc[j] = _winsor_median_from_sorted(in_window)
+        loc.loc[idxs] = group_loc
+        n.loc[idxs] = group_n
     return loc, n
 
 
