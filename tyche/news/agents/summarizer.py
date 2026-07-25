@@ -51,7 +51,7 @@ from tqdm import tqdm
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 from huggingface_hub import HfApi
 
-from tyche.common.config import settings
+from tyche.news.config import settings
 from tyche.common.device import resolve_device
 from tyche.common.hf_loading import load_with_retry, release_device_memory
 from tyche.common.logging import get_logger

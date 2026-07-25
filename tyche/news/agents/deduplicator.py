@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 from sklearn.cluster import AgglomerativeClustering
 
-from tyche.common.config import settings
+from tyche.news.config import settings
 from tyche.common.logging import get_logger
 from tyche.news.service import embedder
 from tyche.news.records import Article, Dedup, Summary

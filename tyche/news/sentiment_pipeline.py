@@ -16,7 +16,7 @@ from typing import Optional
 
 import pandas as pd
 
-from tyche.common.config import settings
+from tyche.news.config import settings
 from tyche.common.logging import configure_logging, get_logger
 from tyche.news.agents import (
     auditor,

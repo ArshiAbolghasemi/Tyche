@@ -33,7 +33,7 @@ from tenacity import (
 )
 from tqdm import tqdm
 
-from tyche.common.config import settings
+from tyche.news.config import settings
 from tyche.common.logging import get_logger
 from tyche.news.records import Aggregate, Dedup, Score, Summary
 

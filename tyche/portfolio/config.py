@@ -1,0 +1,116 @@
+"""Central configuration for the multimodal portfolio pipeline.
+
+Every stage reads its settings from the frozen dataclasses here, so paths, split
+dates, window sizes, and hyperparameters live in exactly one place. Defaults target
+the data actually on disk (prices cover 2023-10-02 -> 2024-12-31, 5 assets); set a
+real ``test`` range once out-of-sample prices exist.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@dataclass(frozen=True)
+class Paths:
+    news_sentiment: Path = REPO_ROOT / "data/output/news_sentiment.parquet"
+    daily_ohlcv: Path = REPO_ROOT / "data/eodhd/daily_ohclv.parquet"
+    intraday_ohlcv: Path = REPO_ROOT / "data/eodhd/intraday_ohclv.parquet"
+    artifacts: Path = REPO_ROOT / "tyche/portfolio/artifacts"
+
+
+@dataclass(frozen=True)
+class SplitConfig:
+    """Strictly chronological split (no shuffling). ``purge``/``embargo`` drop
+    samples whose forward target window leaks across a boundary."""
+
+    train_start: str = "2023-10-02"
+    train_end: str = "2024-09-30"
+    val_start: str = "2024-10-01"
+    val_end: str = "2024-12-31"
+    # No priced data past 2024-12-31 yet: test defaults to the validation window.
+    # Once 2025 prices are added, point these at the real out-of-sample range.
+    test_start: str = "2024-10-01"
+    test_end: str = "2024-12-31"
+
+
+@dataclass(frozen=True)
+class WindowConfig:
+    lookback: int = 30  # T: historical trading days per sample
+    holding: int = 5  # H: forward return horizon (also rebalance step)
+    embargo: int = 5  # >= H trading days between splits
+
+
+@dataclass(frozen=True)
+class IntradayConfig:
+    resample: str = "15min"  # 5min | 15min | 30min
+    session_start: str = "09:30"
+    session_end: str = "16:00"
+    max_bars_per_day: int = 27  # 6.5h / 15min ~ 26 regular bars (+slack)
+
+
+@dataclass(frozen=True)
+class DailyFeatureConfig:
+    vol_window: int = 20
+    mom_windows: tuple[int, ...] = (5, 20)
+    rsi_window: int = 14
+    atr_window: int = 14
+    zscore_window: int = 20
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    conv_channels: int = 32
+    kernel_size: int = 3
+    dropout: float = 0.2
+    hidden_dim: int = 64  # LSTM hidden size / fused day-embedding size
+    cov_rank: int = 2  # low-rank factor width for Sigma = LL^T + diag(d)
+    cov_eps: float = 1e-4  # softplus floor + Cholesky jitter
+    sequence_encoder: str = "lstm"  # lstm | attention
+
+
+@dataclass(frozen=True)
+class TrainConfig:
+    epochs: int = 40
+    batch_size: int = 32
+    lr: float = 1e-3
+    weight_decay: float = 1e-5
+    huber_lambda: float = 1.0  # lambda_1
+    cov_reg_lambda: float = 1e-3  # lambda_2
+    grad_clip: float = 1.0
+    patience: int = 8  # early-stopping on val NLL
+    seed: int = 7
+    device: str = "auto"  # auto | cpu | cuda | mps
+
+
+@dataclass(frozen=True)
+class PortfolioConfig:
+    """Black-Litterman + constrained mean-variance optimization + backtest."""
+
+    bl_tau: float = 0.05  # prior-covariance scaling in BL
+    bl_risk_aversion: float = 2.5  # delta, implied-equilibrium-return scaling
+    cov_shrinkage: float = 0.3  # blend predicted vs historical covariance
+    max_weight: float = 0.40  # per-asset cap
+    turnover_penalty: float = 0.0  # optional L1 turnover term in the objective
+    transaction_cost_bps: float = 10.0
+    slippage_bps: float = 5.0
+    hist_cov_window: int = 60  # trading days for the historical covariance
+
+
+@dataclass(frozen=True)
+class Config:
+    paths: Paths = field(default_factory=Paths)
+    split: SplitConfig = field(default_factory=SplitConfig)
+    window: WindowConfig = field(default_factory=WindowConfig)
+    intraday: IntradayConfig = field(default_factory=IntradayConfig)
+    daily: DailyFeatureConfig = field(default_factory=DailyFeatureConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    train: TrainConfig = field(default_factory=TrainConfig)
+    portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
+
+
+def default_config() -> Config:
+    return Config()

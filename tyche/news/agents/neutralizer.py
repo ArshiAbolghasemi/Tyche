@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 from sortedcontainers import SortedList
 
-from tyche.common.config import settings
+from tyche.news.config import settings
 from tyche.common.logging import get_logger
 from tyche.news.records import (
     Aggregate,
