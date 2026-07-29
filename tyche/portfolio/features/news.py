@@ -16,6 +16,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from sklearn.cluster import AgglomerativeClustering
+from tqdm import tqdm
 
 from tyche.common.logging import get_logger
 from tyche.news.service.embedder import embed_texts
@@ -83,6 +84,12 @@ def _embedding_lookup(df: pd.DataFrame) -> dict[str, np.ndarray]:
     if not unique_texts:
         return {}
 
+    log.info(
+        "portfolio news feature extraction embedding %d unique summaries from "
+        "%d article rows",
+        len(unique_texts),
+        len(df),
+    )
     embeddings = embed_texts(unique_texts)
     return {
         text: embeddings[i].astype(np.float32) for i, text in enumerate(unique_texts)
@@ -119,28 +126,39 @@ def _aggregate_selection_windows(
     lookback = pd.Timedelta(days=int(cfg.news.dedup_lookback_days))
     rows: list[dict] = []
     total_representatives = 0
+    grouped = list(df.groupby("asset", sort=True))
+    total_windows = len(grouped) * len(trading_days)
 
-    for asset, asset_df in df.groupby("asset", sort=True):
-        asset_df = asset_df.sort_values(["date", "ts"])
-        for date in trading_days:
-            start = date - lookback
-            window = asset_df[(asset_df["date"] > start) & (asset_df["date"] <= date)]
-            if window.empty:
-                continue
-            mean_sent, n_articles = _representative_window_features(
-                window,
-                embedding_by_text,
-                cfg,
-            )
-            total_representatives += n_articles
-            rows.append(
-                {
-                    "asset": asset,
-                    "date": date,
-                    "mean_sent": mean_sent,
-                    "n_articles": n_articles,
-                }
-            )
+    with tqdm(
+        total=total_windows,
+        desc="news feature windows",
+        unit="window",
+    ) as pbar:
+        for asset, asset_df in grouped:
+            asset_df = asset_df.sort_values(["date", "ts"])
+            for date in trading_days:
+                pbar.update(1)
+                pbar.set_postfix_str(f"asset={asset}")
+                start = date - lookback
+                window = asset_df[
+                    (asset_df["date"] > start) & (asset_df["date"] <= date)
+                ]
+                if window.empty:
+                    continue
+                mean_sent, n_articles = _representative_window_features(
+                    window,
+                    embedding_by_text,
+                    cfg,
+                )
+                total_representatives += n_articles
+                rows.append(
+                    {
+                        "asset": asset,
+                        "date": date,
+                        "mean_sent": mean_sent,
+                        "n_articles": n_articles,
+                    }
+                )
 
     log.info(
         "news deduplication used %d centroid representatives across %d "
