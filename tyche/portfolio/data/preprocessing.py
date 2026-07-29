@@ -46,7 +46,9 @@ def fit_standardizer(data: AlignedData, train_day_idx: np.ndarray) -> Standardiz
     nonpad = flat[np.abs(flat).sum(axis=1) > 0]
     intra_mean, intra_std = _moments(nonpad, axis=(0,))
 
-    passthrough = [data.news_names.index("no_news")]
+    passthrough = (
+        [data.news_names.index("no_news")] if "no_news" in data.news_names else []
+    )
     return Standardizer(
         daily_mean,
         daily_std,

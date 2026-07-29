@@ -1,8 +1,9 @@
 """Weight-generating strategies for the portfolio backtest.
 
 Each factory returns a ``Strategy`` closure ``t -> weights[N]``. The public model set is
-restricted to EW, BL, MVO, RP, and HRP. BL/MVO/RP/HRP consume predicted mean/covariance
-forecasts keyed by rebalance decision day; EW is the simple equal-capital benchmark.
+restricted to EW, BL, Bayesian_BL, MVO, RP, and HRP. Optimized models consume predicted
+mean/covariance forecasts keyed by rebalance decision day; EW is the simple
+equal-capital benchmark.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import numpy as np
 
 from tyche.portfolio.allocation.backtest import Strategy
 from tyche.portfolio.allocation.black_litterman import (
+    bayesian_black_litterman_posterior,
     black_litterman_posterior,
     black_litterman_weights,
 )
@@ -76,5 +78,20 @@ def bl(forecasts: MomentForecasts, cfg: Config) -> Strategy:
         mu, cov = _moments(forecasts, t)
         post_mu, post_cov = black_litterman_posterior(mu, cov, cov, cfg.portfolio)
         return black_litterman_weights(post_mu, post_cov, cfg.portfolio)
+
+    return strat
+
+
+def bayesian_bl(forecasts: MomentForecasts, cfg: Config) -> Strategy:
+    """Bayesian BL posterior predictive moments, allocated by constrained MVO."""
+
+    def strat(t: int) -> np.ndarray:
+        mu, cov = _moments(forecasts, t)
+        post_mu, post_cov = bayesian_black_litterman_posterior(
+            mu,
+            cov,
+            cfg.portfolio,
+        )
+        return optimize_weights(post_mu, post_cov, cfg.portfolio)
 
     return strat

@@ -13,21 +13,19 @@ from tyche.portfolio.config import Config
 from tyche.portfolio.data.universe import to_canonical
 
 
-_NEWS_COLUMNS = ["name", "valid_time", "sentiment_final"]
+_NEWS_COLUMNS = ["name", "valid_time", "sentiment_final", "summary_text"]
 
 
 def load_news_sentiment(cfg: Config) -> pd.DataFrame:
     """News sentiment keyed by canonical asset and publication time.
 
-    Every article is a row and every row carries its own score — the news pipeline no
-    longer deduplicates, so reprints are not collapsed and coverage volume survives
-    into the features. Grouping near-duplicate reprints into stories is the portfolio
-    side's job now; until that exists, a day's article count is the volume proxy."""
+    Every article is a row and every row carries its own score. The portfolio feature
+    stage clusters near-duplicate summaries into story groups before aggregation."""
     df = pd.read_parquet(cfg.paths.news_sentiment, columns=_NEWS_COLUMNS)
     df["asset"] = to_canonical(df["name"])
     df = df.dropna(subset=["asset"])
     df["ts"] = pd.to_datetime(df["valid_time"], utc=True)
-    keep = ["asset", "ts", "sentiment_final"]
+    keep = ["asset", "ts", "sentiment_final", "summary_text"]
     return df[keep].sort_values("ts").reset_index(drop=True)
 
 

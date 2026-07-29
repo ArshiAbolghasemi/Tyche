@@ -1,4 +1,4 @@
-"""Black-Litterman posterior via PyPortfolioOpt, and its closed-form weights.
+"""Black-Litterman posterior variants and their portfolio weights.
 
 The predicted expected returns are absolute BL views (one per asset, P = I); the
 predicted variances set the view uncertainty Omega, so a confident prediction (small
@@ -13,6 +13,16 @@ arrays stay in the pipeline's fixed universe order.
 that closed form to hang a long-only bound, a position cap, or a turnover penalty, so
 the weights it returns may be short and may be levered before normalization. That is
 the trade being made when it is used in place of the constrained optimizer.
+
+``bayesian_black_litterman_posterior`` applies the same BL idea as an explicit
+normal-normal Bayesian update:
+
+    mu | prior ~ N(pi, tau Sigma)
+    views      ~ N(mu, Omega)
+
+With one absolute view per asset (P = I), the posterior over expected returns has a
+closed form. The allocation layer can then use the posterior predictive covariance
+``Sigma + Var(mu | views)`` in a constrained optimizer.
 """
 
 from __future__ import annotations
@@ -57,6 +67,46 @@ def black_litterman_posterior(
     posterior_mean = np.asarray(bl.bl_returns()).reshape(-1)
     posterior_cov = np.asarray(bl.bl_cov())
     return posterior_mean, posterior_cov
+
+
+def _solve(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    try:
+        return np.linalg.solve(a, b)
+    except np.linalg.LinAlgError:
+        return np.linalg.lstsq(a, b, rcond=None)[0]
+
+
+def bayesian_black_litterman_posterior(
+    mu_view: np.ndarray,
+    cov_pred: np.ndarray,
+    cfg: PortfolioConfig,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Bayesian BL posterior mean and posterior predictive covariance.
+
+    The prior mean is the reverse-optimized equilibrium return of an equal-weight
+    portfolio. The prior covariance of expected returns is ``tau * Sigma``. The view
+    covariance ``Omega`` is diagonal and uses the model-predicted variances, so assets
+    with lower predicted uncertainty exert stronger pull on the posterior.
+    """
+    n = len(mu_view)
+    sigma = np.asarray(cov_pred, dtype=float)
+    w_eq = np.full(n, 1.0 / n)
+    pi = cfg.bl_risk_aversion * sigma @ w_eq
+
+    eps = 1e-8
+    eye = np.eye(n)
+    prior_cov = max(cfg.bl_tau, eps) * sigma + eps * eye
+    omega = np.diag(np.clip(np.diag(sigma), eps, None))
+
+    prior_precision = _solve(prior_cov, eye)
+    view_precision = _solve(omega, eye)
+    posterior_precision = prior_precision + view_precision
+    posterior_cov_mu = _solve(posterior_precision, eye)
+    posterior_mean = posterior_cov_mu @ (
+        prior_precision @ pi + view_precision @ mu_view
+    )
+    posterior_predictive_cov = sigma + posterior_cov_mu
+    return posterior_mean, posterior_predictive_cov
 
 
 def black_litterman_weights(

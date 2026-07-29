@@ -1,4 +1,4 @@
-"""Portfolio backtest runner for EW, BL, MVO, RP, and HRP.
+"""Portfolio backtest runner for EW, BL, Bayesian_BL, MVO, RP, and HRP.
 
 The runner prepares the aligned data and chronological split, trains the return
 distribution model for each holding period, predicts mean/covariance forecasts for the
@@ -17,7 +17,7 @@ import pandas as pd
 from tyche.common.logging import get_logger
 from tyche.portfolio.allocation.backtest import run_backtest
 from tyche.portfolio.allocation.moments import log_to_simple
-from tyche.portfolio.allocation.strategies import bl, ew, hrp, mvo, rp
+from tyche.portfolio.allocation.strategies import bayesian_bl, bl, ew, hrp, mvo, rp
 from tyche.portfolio.config import Config, default_config
 from tyche.portfolio.data.assemble import AlignedData, assemble
 from tyche.portfolio.data.preprocessing import apply_standardizer, fit_standardizer
@@ -171,6 +171,7 @@ def _run_portfolios(prepared: PreparedExperiment, cfg: Config) -> dict:
     strategies = {
         "EW": ew(data.adj_close),
         "BL": bl(prepared.forecasts, cfg),
+        "Bayesian_BL": bayesian_bl(prepared.forecasts, cfg),
         "MVO": mvo(prepared.forecasts, cfg),
         "RP": rp(prepared.forecasts, cfg),
         "HRP": hrp(prepared.forecasts, cfg),

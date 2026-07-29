@@ -66,6 +66,14 @@ class DailyFeatureConfig:
 
 
 @dataclass(frozen=True)
+class NewsFeatureConfig:
+    """Portfolio-side news-story clustering before daily aggregation."""
+
+    dedup_enabled: bool = True
+    dedup_similarity_threshold: float = 0.90
+
+
+@dataclass(frozen=True)
 class ModelConfig:
     conv_channels: int = 32
     kernel_size: int = 3
@@ -82,7 +90,7 @@ class TrainConfig:
     batch_size: int = 32
     lr: float = 1e-3
     weight_decay: float = 1e-5
-    target_distribution: str = "student_t"  # gaussian | student_t
+    target_distribution: str = "gaussian"  # gaussian | student_t
     student_t_df: float = 5.0  # degrees of freedom; must be > 2 for finite covariance
     huber_lambda: float = 1.0  # lambda_1
     cov_reg_lambda: float = 1e-3  # lambda_2
@@ -98,7 +106,7 @@ class PortfolioConfig:
 
     bl_tau: float = 0.05  # prior-covariance scaling in BL
     bl_risk_aversion: float = 2.5  # delta, implied-equilibrium-return scaling
-    cov_shrinkage: float = 0.3  # blend predicted vs historical covariance
+    cov_shrinkage: float = 0.3  # blend predicted vs reference covariance
     max_weight: float = 0.40  # per-asset cap (constrained MVO only)
     turnover_penalty: float = 0.0  # optional L1 turnover term in the MVO objective
     transaction_cost_bps: float = 10.0
@@ -126,6 +134,7 @@ class Config:
     window: WindowConfig = field(default_factory=WindowConfig)
     intraday: IntradayConfig = field(default_factory=IntradayConfig)
     daily: DailyFeatureConfig = field(default_factory=DailyFeatureConfig)
+    news: NewsFeatureConfig = field(default_factory=NewsFeatureConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
