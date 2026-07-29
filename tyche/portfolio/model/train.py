@@ -3,6 +3,19 @@
 Pure model training — no portfolio objective ever enters here (per the spec, the
 network optimizes only the return-distribution likelihood). Returns the best model
 (lowest validation NLL) plus the per-epoch history.
+
+Each epoch logs the loss decomposition alongside diagnostics of the two predicted
+objects the allocator actually consumes:
+
+* **mean** — its level, and its *cross-sectional dispersion*. Dispersion is the one
+  that matters: the allocator only ever sees relative views, and the reported IC and
+  rank IC are cross-sectional. A model whose ``mu`` collapses to the same value for
+  every asset can still post a falling NLL while carrying no allocation signal at all,
+  and that failure is invisible in the loss.
+* **covariance** — mean predicted variance, mean off-diagonal correlation, and the
+  spread between the largest and smallest variance. Together these catch the covariance
+  head drifting toward a degenerate solution, which shows up downstream as unstable
+  ``Sigma^-1 mu`` in the direct-BL allocation.
 """
 
 from __future__ import annotations
@@ -13,12 +26,15 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from tyche.common.logging import get_logger
 from tyche.portfolio.data.assemble import AlignedData
 from tyche.portfolio.config import Config
 from tyche.portfolio.model.dataset import WindowDataset
 from tyche.portfolio.model.losses import gaussian_nll, total_loss
-from tyche.portfolio.model.network import MultimodalReturnModel
+from tyche.portfolio.model.network import MultimodalReturnModel, Prediction
 from tyche.portfolio.data.windows import Sample
+
+log = get_logger(__name__)
 
 
 def resolve_device(name: str) -> torch.device:
@@ -55,15 +71,64 @@ def _move(batch: dict, device: torch.device) -> dict:
 
 
 @torch.no_grad()
-def _val_nll(model, loader, device) -> float:
+def moment_stats(pred: Prediction) -> dict[str, float]:
+    """Diagnostics of the predicted mean and covariance for one batch."""
+    mu, cov = pred.mu, pred.cov
+    n = mu.shape[-1]
+    var = torch.diagonal(cov, dim1=-2, dim2=-1)
+    sd = var.clamp_min(1e-12).sqrt()
+    corr = cov / (sd.unsqueeze(-1) * sd.unsqueeze(-2))
+    off_diagonal = ~torch.eye(n, dtype=torch.bool, device=mu.device)
+    return {
+        "mu_mean": mu.mean().item(),
+        # Std across assets within a date — the signal the allocator can act on.
+        "mu_dispersion": mu.std(dim=-1).mean().item(),
+        "cov_var": var.mean().item(),
+        "cov_corr": corr[..., off_diagonal].mean().item(),
+        "cov_var_spread": (var.max(dim=-1).values / var.min(dim=-1).values)
+        .mean()
+        .item(),
+    }
+
+
+def _accumulate(running: dict[str, float], parts: dict[str, float]) -> None:
+    for k, v in parts.items():
+        running[k] = running.get(k, 0.0) + v
+
+
+@torch.no_grad()
+def _evaluate(model, loader, device) -> tuple[float, dict[str, float]]:
+    """Validation NLL plus the same moment diagnostics, sample-weighted."""
     model.eval()
     total, count = 0.0, 0
+    running: dict[str, float] = {}
     for batch in loader:
         batch = _move(batch, device)
         pred = model(batch["daily"], batch["news"], batch["intraday"])
-        total += gaussian_nll(pred, batch["target"]).item() * len(batch["target"])
-        count += len(batch["target"])
-    return total / max(count, 1)
+        size = len(batch["target"])
+        total += gaussian_nll(pred, batch["target"]).item() * size
+        _accumulate(running, {k: v * size for k, v in moment_stats(pred).items()})
+        count += size
+    denom = max(count, 1)
+    return total / denom, {k: v / denom for k, v in running.items()}
+
+
+def _log_epoch(tag: str, epoch: int, record: dict) -> None:
+    log.info(
+        "[%s] epoch %02d | val_nll %+.4f | train nll %+.4f huber %.4f cov_reg %.4f | "
+        "mu mean %+.5f disp %.5f | cov var %.5f corr %+.3f spread %.1f",
+        tag,
+        epoch,
+        record["val_nll"],
+        record["nll"],
+        record["huber"],
+        record["cov_reg"],
+        record["mu_mean"],
+        record["mu_dispersion"],
+        record["cov_var"],
+        record["cov_corr"],
+        record["cov_var_spread"],
+    )
 
 
 def train_model(
@@ -73,6 +138,7 @@ def train_model(
     cfg: Config,
     use_news=True,
     use_intraday=True,
+    tag: str = "model",
 ) -> TrainResult:
     torch.manual_seed(cfg.train.seed)
     np.random.seed(cfg.train.seed)
@@ -92,10 +158,19 @@ def train_model(
         WindowDataset(data, val_samples), batch_size=cfg.train.batch_size
     )
 
+    log.info(
+        "[%s] training on %d samples (val %d) | device=%s | params=%d",
+        tag,
+        len(train_samples),
+        len(val_samples),
+        device,
+        sum(p.numel() for p in model.parameters()),
+    )
+
     best_state, best_nll, history, stale = None, float("inf"), [], 0
     for epoch in range(cfg.train.epochs):
         model.train()
-        running = {"nll": 0.0, "huber": 0.0, "cov_reg": 0.0}
+        running: dict[str, float] = {}
         for batch in train_loader:
             batch = _move(batch, device)
             opt.zero_grad()
@@ -106,23 +181,33 @@ def train_model(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
             opt.step()
-            for k in running:
-                running[k] += parts[k]
+            _accumulate(running, parts)
+            _accumulate(running, moment_stats(pred))
 
-        val_nll = _val_nll(model, val_loader, device) if val_samples else float("nan")
-        history.append(
-            {
-                "epoch": epoch,
-                "val_nll": val_nll,
-                **{k: v / len(train_loader) for k, v in running.items()},
-            }
-        )
+        n_batches = max(len(train_loader), 1)
+        record = {"epoch": epoch, **{k: v / n_batches for k, v in running.items()}}
 
-        if val_samples and val_nll < best_nll - 1e-4:
-            best_nll, best_state, stale = val_nll, _clone(model), 0
+        if val_samples:
+            val_nll, val_moments = _evaluate(model, val_loader, device)
+            record["val_nll"] = val_nll
+            record.update({f"val_{k}": v for k, v in val_moments.items()})
+        else:
+            record["val_nll"] = float("nan")
+
+        history.append(record)
+        _log_epoch(tag, epoch, record)
+
+        if val_samples and record["val_nll"] < best_nll - 1e-4:
+            best_nll, best_state, stale = record["val_nll"], _clone(model), 0
         else:
             stale += 1
             if stale >= cfg.train.patience:
+                log.info(
+                    "[%s] early stop at epoch %d (best val_nll %+.4f)",
+                    tag,
+                    epoch,
+                    best_nll,
+                )
                 break
 
     if best_state is not None:

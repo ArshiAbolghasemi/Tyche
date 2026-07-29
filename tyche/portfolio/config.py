@@ -25,16 +25,20 @@ class Paths:
 @dataclass(frozen=True)
 class SplitConfig:
     """Strictly chronological split (no shuffling). ``purge``/``embargo`` drop
-    samples whose forward target window leaks across a boundary."""
+    samples whose forward target window leaks across a boundary.
 
-    train_start: str = "2023-10-02"
-    train_end: str = "2024-09-30"
-    val_start: str = "2024-10-01"
-    val_end: str = "2024-12-31"
-    # No priced data past 2024-12-31 yet: test defaults to the validation window.
-    # Once 2025 prices are added, point these at the real out-of-sample range.
-    test_start: str = "2024-10-01"
-    test_end: str = "2024-12-31"
+    The in-sample period is split ``train_fraction`` / ``1 - train_fraction`` on the
+    **trading-day index** (not the calendar), so the boundary adapts to the data rather
+    than being hard-coded. Everything from ``test_start`` onward is untouched by
+    training, standardization, and early stopping — it is the genuine out-of-sample
+    year the portfolio is judged on.
+    """
+
+    in_sample_start: str = "2023-10-02"
+    in_sample_end: str = "2024-12-31"
+    train_fraction: float = 0.8  # first 80% of in-sample days train, last 20% validate
+    test_start: str = "2025-01-01"
+    test_end: str = "2025-12-31"
 
 
 @dataclass(frozen=True)
@@ -88,16 +92,31 @@ class TrainConfig:
 
 @dataclass(frozen=True)
 class PortfolioConfig:
-    """Black-Litterman + constrained mean-variance optimization + backtest."""
+    """Black-Litterman, risk-based allocators, mean-variance optimization, backtest."""
 
     bl_tau: float = 0.05  # prior-covariance scaling in BL
     bl_risk_aversion: float = 2.5  # delta, implied-equilibrium-return scaling
     cov_shrinkage: float = 0.3  # blend predicted vs historical covariance
-    max_weight: float = 0.40  # per-asset cap
-    turnover_penalty: float = 0.0  # optional L1 turnover term in the objective
+    max_weight: float = 0.40  # per-asset cap (constrained MVO only)
+    turnover_penalty: float = 0.0  # optional L1 turnover term in the MVO objective
     transaction_cost_bps: float = 10.0
     slippage_bps: float = 5.0
     hist_cov_window: int = 60  # trading days for the historical covariance
+
+    # Predicted mu/Sigma are log-return moments (the training target is a log return);
+    # BL, the optimizers, and the cost model all assume arithmetic returns. When true,
+    # the exact lognormal moment transform is applied before allocation.
+    convert_to_simple_returns: bool = True
+
+    # "round_trip" applies R' = (R(1-x) - 2x) / (1+x) per holding period with x scaled
+    # by realized turnover; "linear" charges the older turnover * cost_rate.
+    cost_model: str = "round_trip"
+
+    # Risk parity (equal risk contribution), solved by cyclical coordinate descent.
+    risk_parity_max_iter: int = 500
+    risk_parity_tol: float = 1e-10
+    # Hierarchical risk parity: scipy linkage method on the correlation distance.
+    hrp_linkage: str = "single"
 
 
 @dataclass(frozen=True)

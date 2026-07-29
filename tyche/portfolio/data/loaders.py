@@ -8,25 +8,52 @@ here — that lives in the ``features_*`` modules.
 from __future__ import annotations
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from tyche.portfolio.config import Config
 from tyche.portfolio.data.universe import to_canonical
 
 
+_NEWS_BASE_COLUMNS = ["name", "valid_time", "is_representative", "sentiment_final"]
+_NEWS_CLUSTER_COLUMNS = ["dedup_cluster_id", "dedup_cluster_size"]
+
+
 def load_news_sentiment(cfg: Config) -> pd.DataFrame:
-    """Representative-news sentiment: ``is_representative`` rows only, keyed by
-    canonical asset and publication time. Columns: asset, ts, sentiment_final."""
+    """News sentiment keyed by canonical asset and publication time.
+
+    Every row is kept, not just cluster representatives: coverage volume is itself a
+    signal, and dropping reprints discards it. Members of a cluster share their seed's
+    score, so averaging over all rows weights a story by how widely it was carried.
+
+    ``dedup_cluster_id`` / ``dedup_cluster_size`` are emitted by the deduplicator's
+    online pass and are backward-looking. They are optional here so the portfolio
+    pipeline still runs against a ``news_sentiment.parquet`` written before those
+    columns existed; when absent, every article is treated as its own cluster of one."""
+    available = set(pq.read_schema(cfg.paths.news_sentiment).names)
+    cluster_cols = [c for c in _NEWS_CLUSTER_COLUMNS if c in available]
     df = pd.read_parquet(
-        cfg.paths.news_sentiment,
-        columns=["name", "valid_time", "is_representative", "sentiment_final"],
+        cfg.paths.news_sentiment, columns=_NEWS_BASE_COLUMNS + cluster_cols
     )
-    df = df[df["is_representative"]].copy()
     df["asset"] = to_canonical(df["name"])
     df = df.dropna(subset=["asset"])
     df["ts"] = pd.to_datetime(df["valid_time"], utc=True)
-    return df[["asset", "ts", "sentiment_final"]].sort_values("ts").reset_index(
-        drop=True
-    )
+
+    if "dedup_cluster_id" not in df:
+        df["dedup_cluster_id"] = df.index.astype(str)
+    if "dedup_cluster_size" not in df:
+        df["dedup_cluster_size"] = 1
+    df["dedup_cluster_size"] = df["dedup_cluster_size"].fillna(1).astype(int)
+    df["is_representative"] = df["is_representative"].fillna(False).astype(bool)
+
+    keep = [
+        "asset",
+        "ts",
+        "sentiment_final",
+        "is_representative",
+        "dedup_cluster_id",
+        "dedup_cluster_size",
+    ]
+    return df[keep].sort_values("ts").reset_index(drop=True)
 
 
 def load_daily(cfg: Config) -> pd.DataFrame:

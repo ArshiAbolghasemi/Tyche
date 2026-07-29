@@ -1,4 +1,4 @@
-"""Black-Litterman posterior via PyPortfolioOpt.
+"""Black-Litterman posterior via PyPortfolioOpt, and its closed-form weights.
 
 The predicted expected returns are absolute BL views (one per asset, P = I); the
 predicted variances set the view uncertainty Omega, so a confident prediction (small
@@ -7,6 +7,12 @@ reverse-optimized equilibrium of a blended covariance (predicted shrunk toward
 historical), with an equal-weight neutral market in the absence of market caps. The
 posterior mean/cov come from ``pypfopt.BlackLittermanModel``; assets are addressed by
 integer position so the in/out arrays stay in the pipeline's fixed universe order.
+
+``black_litterman_weights`` is the canonical BL allocation, ``w = (delta Sigma)^-1 mu``
+— which is precisely the *unconstrained* mean-variance solution. There is nowhere in
+that closed form to hang a long-only bound, a position cap, or a turnover penalty, so
+the weights it returns may be short and may be levered before normalization. That is
+the trade being made when it is used in place of the constrained optimizer.
 """
 
 from __future__ import annotations
@@ -14,7 +20,10 @@ from __future__ import annotations
 import numpy as np
 from pypfopt import BlackLittermanModel
 
+from tyche.common.logging import get_logger
 from tyche.portfolio.config import PortfolioConfig
+
+log = get_logger(__name__)
 
 
 def blend_covariance(
@@ -48,3 +57,33 @@ def black_litterman_posterior(
     posterior_mean = np.asarray(bl.bl_returns()).reshape(-1)
     posterior_cov = np.asarray(bl.bl_cov())
     return posterior_mean, posterior_cov
+
+
+def black_litterman_weights(
+    posterior_mean: np.ndarray, posterior_cov: np.ndarray, cfg: PortfolioConfig
+) -> np.ndarray:
+    """Closed-form BL weights ``w = (delta Sigma)^-1 mu``, normalized to sum to one.
+
+    Solved rather than inverted, falling back to least squares on a singular system —
+    with five correlated mega-caps the posterior covariance is routinely close to
+    singular, which is exactly why this allocation swings hard on small changes in
+    ``mu``.
+
+    Normalizing by ``sum(w)`` is the standard convention but is unsafe when the raw
+    weights sum to nearly zero: the book blows up, and a negative sum silently flips
+    every position's sign. Both cases fall back to equal weight and are logged instead
+    of being propagated into the backtest."""
+    n = len(posterior_mean)
+    a = cfg.bl_risk_aversion * posterior_cov
+    try:
+        raw = np.linalg.solve(a, posterior_mean)
+    except np.linalg.LinAlgError:
+        raw = np.linalg.lstsq(a, posterior_mean, rcond=None)[0]
+
+    total = float(raw.sum())
+    if not np.isfinite(total) or abs(total) < 1e-8 or total < 0:
+        log.warning(
+            "direct BL weights sum to %.2e; falling back to equal weight", total
+        )
+        return np.full(n, 1.0 / n)
+    return raw / total

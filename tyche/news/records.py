@@ -55,15 +55,18 @@ class Embedding:
 
 
 # --- Agent 4 — Deduplicator output columns ---
-# Near-duplicate summaries (reprints/syndications) are clustered per month; every row
-# inherits its cluster representative's summary so the sentiment call runs once per
-# cluster and the score is shared across the cluster's members.
+# Near-duplicate summaries (reprints/syndications) are clustered per month, online and
+# in publication order; every row inherits its cluster seed's summary so the sentiment
+# call runs once per cluster and the score is shared across the cluster's members.
 @dataclass(frozen=True)
 class Dedup:
     month: str = "dedup_month"  # calendar-month bucket the row was deduplicated within
     cluster_id: str = "dedup_cluster_id"  # month-scoped cluster label
-    is_representative: str = "is_representative"  # True for the closest-to-centroid row
+    is_representative: str = "is_representative"  # True for the cluster's seed row
     representative_text: str = "representative_summary"  # summary that will be scored
+    # Rows in this cluster up to and including this row — coverage accumulated so far.
+    # Backward-looking by construction, so it is safe to use as a model feature.
+    cluster_size: str = "dedup_cluster_size"
 
 
 # --- Agent 5 — Scorer output columns ---
@@ -119,6 +122,8 @@ OUTPUT_COLUMNS: list[str] = [
     Summary.text,
     Dedup.representative_text,
     Dedup.is_representative,
+    Dedup.cluster_id,
+    Dedup.cluster_size,
     Score.rationale,
     Neutralize.entity_prior_applied,
     Neutralize.shrinkage_weight_w,

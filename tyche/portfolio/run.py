@@ -3,12 +3,14 @@
 Runs the full experiment for one holding period H: prepares the aligned/standardized
 data and chronological split, trains the proposed model plus the two ablations
 (no-news, no-intraday), saves out-of-sample predictions, evaluates the predictive
-model, then backtests the proposed strategy against equal-weight, historical MVO,
-historical BL, and the no-BL / ablation variants under one identical universe, cost,
-and rebalance schedule. Prints two comparison tables and saves artifacts.
+model, then backtests the proposed strategy against equal-weight, risk parity, HRP,
+historical MVO, historical BL, and the no-BL / ablation variants under one identical
+universe, cost, and rebalance schedule. Prints two comparison tables and saves
+artifacts.
 
-Since priced data ends 2024-12-31, the validation window doubles as the out-of-sample
-test; point ``SplitConfig.test_*`` at a real 2025 range once those prices exist.
+Training and validation both live inside 2023-10-02..2024-12-31; the whole of 2025 is
+held out and is what the portfolio is scored on, so no part of the reported backtest
+was seen during fitting or checkpoint selection.
 """
 
 from __future__ import annotations
@@ -23,14 +25,16 @@ from tyche.portfolio.allocation.backtest import run_backtest
 from tyche.portfolio.config import Config, default_config
 from tyche.portfolio.evaluation.model_metrics import evaluate_model
 from tyche.portfolio.evaluation.portfolio_metrics import evaluate_portfolio
-from tyche.portfolio.model.predict import Predictions, predict
+from tyche.portfolio.model.predict import predict
 from tyche.portfolio.data.preprocessing import apply_standardizer, fit_standardizer
 from tyche.portfolio.allocation.strategies import (
     equal_weight,
     historical_bl,
     historical_mvo,
+    hrp,
     model_bl,
     model_no_bl,
+    risk_parity,
 )
 from tyche.portfolio.model.train import train_model
 from tyche.portfolio.data.windows import SplitIndex, build_splits, train_day_indices
@@ -46,8 +50,8 @@ def prepare(cfg: Config):
     return data, std, splits, oos
 
 
-def _train_and_predict(std, splits: SplitIndex, oos, cfg, **flags) -> Predictions:
-    result = train_model(std, splits.train, splits.val, cfg, **flags)
+def _train_and_predict(std, splits: SplitIndex, oos, cfg, tag: str, **flags):
+    result = train_model(std, splits.train, splits.val, cfg, tag=tag, **flags)
     return predict(result.model, std, oos)
 
 
@@ -68,15 +72,19 @@ def _backtest(data, days, rebal_t, strategy, cfg: Config):
 
 def run_experiment(cfg: Config) -> dict:
     data, std, splits, oos = prepare(cfg)
+    oos_label = "test" if splits.test else "val (no test samples)"
     print(
         f"universe={data.assets} | train={len(splits.train)} val={len(splits.val)} "
-        f"oos={len(oos)} | H={cfg.window.holding} T={cfg.window.lookback}"
+        f"oos={len(oos)} [{oos_label}] | H={cfg.window.holding} "
+        f"T={cfg.window.lookback} | cost_model={cfg.portfolio.cost_model}"
     )
 
     preds = {
-        "proposed": _train_and_predict(std, splits, oos, cfg),
-        "no_news": _train_and_predict(std, splits, oos, cfg, use_news=False),
-        "no_intraday": _train_and_predict(std, splits, oos, cfg, use_intraday=False),
+        "proposed": _train_and_predict(std, splits, oos, cfg, "proposed"),
+        "no_news": _train_and_predict(std, splits, oos, cfg, "no_news", use_news=False),
+        "no_intraday": _train_and_predict(
+            std, splits, oos, cfg, "no_intraday", use_intraday=False
+        ),
     }
     model_metrics = {k: evaluate_model(v) for k, v in preds.items()}
 
@@ -88,6 +96,8 @@ def run_experiment(cfg: Config) -> dict:
     strategies = {
         "proposed": model_bl(preds["proposed"], data.adj_close, cfg),
         "equal_weight": equal_weight(data.n_assets),
+        "risk_parity": risk_parity(data.adj_close, cfg),
+        "hrp": hrp(data.adj_close, cfg),
         "historical_mvo": historical_mvo(data.adj_close, cfg),
         "historical_bl": historical_bl(data.adj_close, cfg),
         "no_bl": model_no_bl(preds["proposed"], data.adj_close, cfg),

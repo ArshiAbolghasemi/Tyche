@@ -159,15 +159,20 @@ class DedupConfig:
     reprints/syndications costs a single sentiment call.
 
     News is deduplicated one calendar month at a time (``window``): within a month,
-    unique summaries are embedded, agglomeratively clustered by cosine distance, and
-    each cluster is represented by the member closest to the cluster centroid. Every
-    row inherits its cluster representative's summary, so downstream scoring is done
-    once per cluster and the score is shared across the cluster's members.
+    unique summaries are embedded and clustered **online in publication order** — each
+    summary joins the nearest existing cluster or opens a new one — and each cluster is
+    represented by its **seed**, the earliest member. Every row inherits its cluster
+    seed's summary, so downstream scoring is done once per cluster and the score is
+    shared across the cluster's members.
+
+    Online assignment (rather than clustering the month as a batch) keeps the pipeline
+    causal: a row's cluster, representative, and score are fixed by articles published
+    at or before its own timestamp, never by later ones.
     """
 
-    # Cosine-distance threshold for agglomerative clustering: members within this
-    # distance of each other are treated as the same story. Lower ⇒ stricter (fewer,
-    # tighter clusters); ~0.10–0.20 captures reprints without merging distinct stories.
+    # Cosine-distance threshold for cluster assignment: a summary within this distance
+    # of a cluster's running centroid is treated as the same story. Lower ⇒ stricter
+    # (more, tighter clusters); ~0.10–0.20 captures reprints without merging stories.
     distance_threshold: float = field(
         default_factory=lambda: _env("TYCHE_DEDUP_DISTANCE_THRESHOLD", 0.15, float)
     )
