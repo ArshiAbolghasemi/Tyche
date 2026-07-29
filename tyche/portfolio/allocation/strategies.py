@@ -1,11 +1,13 @@
 """Weight-generating strategies for the portfolio backtest.
 
 Each factory returns a ``Strategy`` closure ``t -> weights[N]``. The public model set is
-restricted to BL, MVO, RP, and HRP, all using trailing historical moments so they share
-one universe, cost model, and rebalance schedule.
+restricted to EW, BL, MVO, RP, and HRP. BL/MVO/RP/HRP consume predicted mean/covariance
+forecasts keyed by rebalance decision day; EW is the simple equal-capital benchmark.
 """
 
 from __future__ import annotations
+
+from collections.abc import Mapping
 
 import numpy as np
 
@@ -15,63 +17,63 @@ from tyche.portfolio.allocation.black_litterman import (
     black_litterman_weights,
 )
 from tyche.portfolio.config import Config
-from tyche.portfolio.allocation.history import (
-    historical_covariance,
-    historical_mean,
-    simple_returns,
-)
 from tyche.portfolio.allocation.optimizer import optimize_weights
 from tyche.portfolio.allocation.risk_parity import (
     hierarchical_risk_parity_weights,
     risk_parity_weights,
 )
 
+MomentForecasts = Mapping[int, tuple[np.ndarray, np.ndarray]]
 
-def rp(adj_close: np.ndarray, cfg: Config) -> Strategy:
-    """Equal risk contribution on the trailing historical covariance."""
-    returns = simple_returns(adj_close)
-    win, h = cfg.portfolio.hist_cov_window, cfg.window.holding
+
+def _moments(forecasts: MomentForecasts, t: int) -> tuple[np.ndarray, np.ndarray]:
+    try:
+        return forecasts[int(t)]
+    except KeyError as exc:
+        raise KeyError(f"missing predicted moments for rebalance day {t}") from exc
+
+
+def ew(adj_close: np.ndarray) -> Strategy:
+    """Equal-weight benchmark."""
+    w = np.full(adj_close.shape[0], 1.0 / adj_close.shape[0])
+    return lambda _: w
+
+
+def rp(forecasts: MomentForecasts, cfg: Config) -> Strategy:
+    """Equal risk contribution on the predicted covariance."""
 
     def strat(t: int) -> np.ndarray:
-        cov = historical_covariance(returns, t, win, h)
+        _, cov = _moments(forecasts, t)
         return risk_parity_weights(cov, cfg.portfolio)
 
     return strat
 
 
-def hrp(adj_close: np.ndarray, cfg: Config) -> Strategy:
-    """Hierarchical risk parity on the trailing historical covariance."""
-    returns = simple_returns(adj_close)
-    win, h = cfg.portfolio.hist_cov_window, cfg.window.holding
+def hrp(forecasts: MomentForecasts, cfg: Config) -> Strategy:
+    """Hierarchical risk parity on the predicted covariance."""
 
     def strat(t: int) -> np.ndarray:
-        cov = historical_covariance(returns, t, win, h)
+        _, cov = _moments(forecasts, t)
         return hierarchical_risk_parity_weights(cov, cfg.portfolio)
 
     return strat
 
 
-def mvo(adj_close: np.ndarray, cfg: Config) -> Strategy:
-    """Constrained MVO on trailing historical mean and covariance."""
-    returns = simple_returns(adj_close)
-    win, h = cfg.portfolio.hist_cov_window, cfg.window.holding
+def mvo(forecasts: MomentForecasts, cfg: Config) -> Strategy:
+    """Constrained MVO on the predicted mean and covariance."""
 
     def strat(t: int) -> np.ndarray:
-        mu = historical_mean(returns, t, win, h)
-        cov = historical_covariance(returns, t, win, h)
+        mu, cov = _moments(forecasts, t)
         return optimize_weights(mu, cov, cfg.portfolio)
 
     return strat
 
 
-def bl(adj_close: np.ndarray, cfg: Config) -> Strategy:
-    """Historical views through BL, allocated by the direct BL closed form."""
-    returns = simple_returns(adj_close)
-    win, h = cfg.portfolio.hist_cov_window, cfg.window.holding
+def bl(forecasts: MomentForecasts, cfg: Config) -> Strategy:
+    """Predicted views through BL, allocated by the direct BL closed form."""
 
     def strat(t: int) -> np.ndarray:
-        mu = historical_mean(returns, t, win, h)
-        cov = historical_covariance(returns, t, win, h)
+        mu, cov = _moments(forecasts, t)
         post_mu, post_cov = black_litterman_posterior(mu, cov, cov, cfg.portfolio)
         return black_litterman_weights(post_mu, post_cov, cfg.portfolio)
 

@@ -3,10 +3,10 @@
 The predicted expected returns are absolute BL views (one per asset, P = I); the
 predicted variances set the view uncertainty Omega, so a confident prediction (small
 variance) pulls the posterior harder than an uncertain one. The prior is the
-reverse-optimized equilibrium of a blended covariance (predicted shrunk toward
-historical), with an equal-weight neutral market in the absence of market caps. The
-posterior mean/cov come from ``pypfopt.BlackLittermanModel``; assets are addressed by
-integer position so the in/out arrays stay in the pipeline's fixed universe order.
+reverse-optimized equilibrium of the predicted covariance, with an equal-weight neutral
+market in the absence of market caps. The posterior mean/cov come from
+``pypfopt.BlackLittermanModel``; assets are addressed by integer position so the in/out
+arrays stay in the pipeline's fixed universe order.
 
 ``black_litterman_weights`` is the canonical BL allocation, ``w = (delta Sigma)^-1 mu``
 — which is precisely the *unconstrained* mean-variance solution. There is nowhere in
@@ -27,16 +27,16 @@ log = get_logger(__name__)
 
 
 def blend_covariance(
-    cov_pred: np.ndarray, cov_hist: np.ndarray, shrinkage: float
+    cov_pred: np.ndarray, cov_reference: np.ndarray, shrinkage: float
 ) -> np.ndarray:
-    """Sigma = s * predicted + (1 - s) * historical."""
-    return shrinkage * cov_pred + (1.0 - shrinkage) * cov_hist
+    """Sigma = s * predicted + (1 - s) * reference."""
+    return shrinkage * cov_pred + (1.0 - shrinkage) * cov_reference
 
 
 def black_litterman_posterior(
     mu_view: np.ndarray,
     cov_pred: np.ndarray,
-    cov_hist: np.ndarray,
+    cov_reference: np.ndarray,
     cfg: PortfolioConfig,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return ``(posterior_mean, posterior_cov)`` for the N assets.
@@ -44,7 +44,7 @@ def black_litterman_posterior(
     ``mu_view`` are the predicted returns (absolute views); ``cov_pred`` supplies both
     the blended prior covariance and the per-view uncertainty (its diagonal)."""
     n = len(mu_view)
-    sigma = blend_covariance(cov_pred, cov_hist, cfg.cov_shrinkage)
+    sigma = blend_covariance(cov_pred, cov_reference, cfg.cov_shrinkage)
 
     w_eq = np.full(n, 1.0 / n)
     pi = cfg.bl_risk_aversion * sigma @ w_eq  # equilibrium prior mean

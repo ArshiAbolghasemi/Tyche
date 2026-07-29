@@ -82,6 +82,8 @@ class TrainConfig:
     batch_size: int = 32
     lr: float = 1e-3
     weight_decay: float = 1e-5
+    target_distribution: str = "student_t"  # gaussian | student_t
+    student_t_df: float = 5.0  # degrees of freedom; must be > 2 for finite covariance
     huber_lambda: float = 1.0  # lambda_1
     cov_reg_lambda: float = 1e-3  # lambda_2
     grad_clip: float = 1.0
@@ -101,8 +103,6 @@ class PortfolioConfig:
     turnover_penalty: float = 0.0  # optional L1 turnover term in the MVO objective
     transaction_cost_bps: float = 10.0
     slippage_bps: float = 5.0
-    hist_cov_window: int = 60  # trading days for the historical covariance
-
     # Predicted mu/Sigma are log-return moments (the training target is a log return);
     # BL, the optimizers, and the cost model all assume arithmetic returns. When true,
     # the exact lognormal moment transform is applied before allocation.

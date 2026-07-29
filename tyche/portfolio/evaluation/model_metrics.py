@@ -1,17 +1,30 @@
 """Predictive-model evaluation metrics.
 
 Point-forecast quality (MAE, RMSE, directional accuracy), cross-sectional ranking
-skill (Pearson IC, Spearman rank IC), distributional fit (Gaussian NLL), and
-calibration (predictive-interval coverage). All operate on saved predictions vs the
-realized forward returns.
+skill (Pearson IC, Spearman rank IC), distributional fit (Gaussian or Student-t NLL),
+and calibration (predictive-interval coverage). All operate on saved predictions vs
+the realized forward returns.
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 from scipy.stats import norm, pearsonr, spearmanr
 
 from tyche.portfolio.model.predict import Predictions
+
+
+def _normalized_distribution(name: str) -> str:
+    normalized = name.lower().replace("-", "_")
+    if normalized in {"gaussian", "normal"}:
+        return "gaussian"
+    if normalized in {"student_t", "t_student", "student", "t"}:
+        return "student_t"
+    raise ValueError(
+        f"target_distribution must be 'gaussian' or 'student_t', got {name!r}"
+    )
 
 
 def _flat(pred: Predictions) -> tuple[np.ndarray, np.ndarray]:
@@ -50,17 +63,37 @@ def rank_ic(pred: Predictions) -> float:
     return float(np.nanmean(ics)) if ics else float("nan")
 
 
-def negative_log_likelihood(pred: Predictions) -> float:
-    """Mean multivariate-Gaussian NLL over rebalance dates."""
+def negative_log_likelihood(
+    pred: Predictions,
+    distribution: str = "gaussian",
+    student_t_df: float = 5.0,
+) -> float:
+    """Mean multivariate NLL over rebalance dates."""
     n = pred.mu.shape[1]
+    dist = _normalized_distribution(distribution)
+    if dist == "student_t" and student_t_df <= 2.0:
+        raise ValueError("student_t_df must be > 2 so covariance is finite")
     total = 0.0
     for i in range(len(pred.mu)):
         diff = pred.target[i] - pred.mu[i]
         cov = pred.cov[i] + 1e-6 * np.eye(n)
+        if dist == "student_t":
+            cov = cov * ((student_t_df - 2.0) / student_t_df)
         chol = np.linalg.cholesky(cov)
         z = np.linalg.solve(chol, diff)
+        quad = z @ z
         logdet = 2.0 * np.log(np.diag(chol)).sum()
-        total += 0.5 * (z @ z + logdet + n * np.log(2 * np.pi))
+        if dist == "gaussian":
+            total += 0.5 * (quad + logdet + n * np.log(2 * np.pi))
+        else:
+            nu = float(student_t_df)
+            log_norm = (
+                math.lgamma((nu + n) / 2.0)
+                - math.lgamma(nu / 2.0)
+                - 0.5 * (n * np.log(nu * np.pi) + logdet)
+            )
+            log_kernel = -0.5 * (nu + n) * np.log1p(quad / nu)
+            total += -(log_norm + log_kernel)
     return float(total / len(pred.mu))
 
 
@@ -73,13 +106,17 @@ def interval_coverage(pred: Predictions, level: float = 0.9) -> float:
     return float(np.mean((pred.target >= lo) & (pred.target <= hi)))
 
 
-def evaluate_model(pred: Predictions) -> dict[str, float]:
+def evaluate_model(
+    pred: Predictions,
+    target_distribution: str = "gaussian",
+    student_t_df: float = 5.0,
+) -> dict[str, float]:
     return {
         "MAE": mae(pred),
         "RMSE": rmse(pred),
         "directional_accuracy": directional_accuracy(pred),
         "IC": information_coefficient(pred),
         "rank_IC": rank_ic(pred),
-        "NLL": negative_log_likelihood(pred),
+        "NLL": negative_log_likelihood(pred, target_distribution, student_t_df),
         "coverage_90": interval_coverage(pred, 0.9),
     }

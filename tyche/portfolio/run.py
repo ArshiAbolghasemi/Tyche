@@ -1,38 +1,146 @@
-"""Portfolio backtest runner for BL, MVO, RP, and HRP.
+"""Portfolio backtest runner for EW, BL, MVO, RP, and HRP.
 
-The runner prepares the aligned data and chronological split, then backtests only the
-four requested allocation models under a shared universe, cost model, and rebalance
-schedule. It can run one holding period or a grid of holding periods and transaction
-costs, writing per-run artifacts plus a combined portfolio-metrics table.
+The runner prepares the aligned data and chronological split, trains the return
+distribution model for each holding period, predicts mean/covariance forecasts for the
+out-of-sample rebalance dates, then passes those forecasts into the allocation models.
+Transaction-cost scenarios reuse the same predictions for a holding period.
 """
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
+import numpy as np
 import pandas as pd
 
-from tyche.portfolio.data.assemble import assemble
+from tyche.common.logging import get_logger
 from tyche.portfolio.allocation.backtest import run_backtest
+from tyche.portfolio.allocation.moments import log_to_simple
+from tyche.portfolio.allocation.strategies import bl, ew, hrp, mvo, rp
 from tyche.portfolio.config import Config, default_config
-from tyche.portfolio.evaluation.portfolio_metrics import evaluate_portfolio
-from tyche.portfolio.allocation.strategies import (
-    bl,
-    mvo,
-    hrp,
-    rp,
+from tyche.portfolio.data.assemble import AlignedData, assemble
+from tyche.portfolio.data.preprocessing import apply_standardizer, fit_standardizer
+from tyche.portfolio.data.windows import (
+    Sample,
+    SplitIndex,
+    build_splits,
+    train_day_indices,
 )
-from tyche.portfolio.data.windows import build_splits
+from tyche.portfolio.evaluation.model_metrics import evaluate_model
+from tyche.portfolio.evaluation.portfolio_metrics import evaluate_portfolio
+from tyche.portfolio.model.predict import Predictions, predict
+from tyche.portfolio.model.train import train_model
 
+log = get_logger(__name__)
 DEFAULT_HOLDINGS: tuple[int, ...] = (1, 2, 3, 5, 10, 20, 40, 60)
 
 
-def prepare(cfg: Config):
-    data = assemble(cfg)
-    splits = build_splits(data, cfg)
+MomentForecasts = dict[int, tuple[np.ndarray, np.ndarray]]
+
+
+@dataclass(frozen=True)
+class PreparedExperiment:
+    data: AlignedData
+    splits: SplitIndex
+    oos: list[Sample]
+    predictions: Predictions
+    forecasts: MomentForecasts
+    oos_label: str
+
+
+def _regularize_covariance(cov: np.ndarray, eps: float) -> np.ndarray:
+    cov = np.asarray(cov, dtype=float)
+    cov = 0.5 * (cov + cov.T)
+    min_eval = float(np.linalg.eigvalsh(cov).min())
+    if min_eval < eps:
+        cov = cov + (eps - min_eval) * np.eye(cov.shape[0])
+    return cov
+
+
+def _build_forecasts(predictions: Predictions, cfg: Config) -> MomentForecasts:
+    forecasts: MomentForecasts = {}
+    for t, mu, cov in zip(
+        predictions.decision_t, predictions.mu, predictions.cov, strict=True
+    ):
+        alloc_mu, alloc_cov = np.asarray(mu, dtype=float), np.asarray(cov, dtype=float)
+        if cfg.portfolio.convert_to_simple_returns:
+            alloc_mu, alloc_cov = log_to_simple(alloc_mu, alloc_cov)
+        forecasts[int(t)] = (
+            alloc_mu,
+            _regularize_covariance(alloc_cov, cfg.model.cov_eps),
+        )
+    return forecasts
+
+
+def prepare(cfg: Config) -> PreparedExperiment:
+    raw = assemble(cfg)
+    splits = build_splits(raw, cfg)
     oos = splits.test if splits.test else splits.val
-    return data, splits, oos
+    oos_label = "test" if splits.test else "val (no test samples)"
+    if not splits.train:
+        raise RuntimeError("no training samples available for the configured split")
+    if not oos:
+        raise RuntimeError("no out-of-sample samples available for portfolio backtest")
+
+    standardizer = fit_standardizer(raw, train_day_indices(splits, cfg))
+    data = apply_standardizer(raw, standardizer)
+
+    log.info(
+        "universe=%s | train=%d val=%d oos=%d [%s] | H=%d T=%d | "
+        "target_distribution=%s",
+        data.assets,
+        len(splits.train),
+        len(splits.val),
+        len(oos),
+        oos_label,
+        cfg.window.holding,
+        cfg.window.lookback,
+        cfg.train.target_distribution,
+    )
+
+    cfg.paths.artifacts.mkdir(parents=True, exist_ok=True)
+    train_result = train_model(
+        data,
+        splits.train,
+        splits.val,
+        cfg,
+        tag=f"H{cfg.window.holding}",
+    )
+    predictions = predict(
+        train_result.model,
+        data,
+        oos,
+        batch_size=cfg.train.batch_size,
+    )
+    pred_path = cfg.paths.artifacts / f"predictions_H{cfg.window.holding}.npz"
+    predictions.save(pred_path)
+
+    model_metrics = evaluate_model(
+        predictions,
+        cfg.train.target_distribution,
+        cfg.train.student_t_df,
+    )
+    pd.DataFrame([model_metrics]).to_csv(
+        cfg.paths.artifacts / f"model_metrics_H{cfg.window.holding}.csv",
+        index=False,
+    )
+    _log_table("Predictive model metrics", pd.DataFrame([model_metrics]))
+    log.info(
+        "saved %d prediction rows for H=%d to %s",
+        len(predictions.decision_t),
+        cfg.window.holding,
+        pred_path,
+    )
+
+    return PreparedExperiment(
+        data=data,
+        splits=splits,
+        oos=oos,
+        predictions=predictions,
+        forecasts=_build_forecasts(predictions, cfg),
+        oos_label=oos_label,
+    )
 
 
 def _rebalance_days(oos, cfg: Config) -> list[int]:
@@ -50,23 +158,22 @@ def _backtest(data, days, rebal_t, strategy, cfg: Config):
     return net, evaluate_portfolio(net, gross.value)
 
 
-def run_experiment(cfg: Config) -> dict:
-    data, splits, oos = prepare(cfg)
-    oos_label = "test" if splits.test else "val (no test samples)"
-    print(
-        f"universe={data.assets} | train={len(splits.train)} val={len(splits.val)} "
-        f"oos={len(oos)} [{oos_label}] | H={cfg.window.holding} "
-        f"T={cfg.window.lookback} | cost_model={cfg.portfolio.cost_model}"
+def _run_portfolios(prepared: PreparedExperiment, cfg: Config) -> dict:
+    data = prepared.data
+    log.info(
+        "portfolio backtest | H=%d | cost_model=%s | transaction_cost_bps=%.4f",
+        cfg.window.holding,
+        cfg.portfolio.cost_model,
+        cfg.portfolio.transaction_cost_bps,
     )
 
-    cfg.paths.artifacts.mkdir(parents=True, exist_ok=True)
-
-    rebal_t = _rebalance_days(oos, cfg)
+    rebal_t = _rebalance_days(prepared.oos, cfg)
     strategies = {
-        "BL": bl(data.adj_close, cfg),
-        "MVO": mvo(data.adj_close, cfg),
-        "RP": rp(data.adj_close, cfg),
-        "HRP": hrp(data.adj_close, cfg),
+        "EW": ew(data.adj_close),
+        "BL": bl(prepared.forecasts, cfg),
+        "MVO": mvo(prepared.forecasts, cfg),
+        "RP": rp(prepared.forecasts, cfg),
+        "HRP": hrp(prepared.forecasts, cfg),
     }
     port_metrics, curves = {}, {}
     for name, strat in strategies.items():
@@ -78,6 +185,10 @@ def run_experiment(cfg: Config) -> dict:
         "portfolio_metrics": port_metrics,
         "curves": curves,
     }
+
+
+def run_experiment(cfg: Config) -> dict:
+    return _run_portfolios(prepare(cfg), cfg)
 
 
 def config_for_holding(cfg: Config, holding: int) -> Config:
@@ -127,15 +238,24 @@ def run_grid(
     costs = transaction_cost_bps or (cfg.portfolio.transaction_cost_bps,)
     multi_cost = len(costs) > 1
 
-    for cost_bps in costs:
-        cost_cfg = config_for_transaction_cost(cfg, cost_bps)
-        for holding in holdings:
-            print(f"\n=== transaction cost {cost_bps:g} bps | H={holding} ===")
+    for holding in holdings:
+        holding_cfg = config_for_holding(cfg, holding)
+        try:
+            prepared = prepare(holding_cfg)
+        except Exception as exc:
+            for cost_bps in costs:
+                failed[(float(cost_bps), holding)] = str(exc)
+            log.exception("failed model training/prediction for H=%d", holding)
+            continue
+
+        for cost_bps in costs:
+            cost_cfg = config_for_transaction_cost(holding_cfg, cost_bps)
+            log.info("transaction cost %g bps | H=%d", cost_bps, holding)
             try:
-                results = run_experiment(config_for_holding(cost_cfg, holding))
+                results = _run_portfolios(prepared, cost_cfg)
             except Exception as exc:
                 failed[(float(cost_bps), holding)] = str(exc)
-                print(f"FAILED cost={cost_bps:g} H={holding}: {exc}")
+                log.exception("failed cost=%g H=%d", cost_bps, holding)
                 continue
 
             portfolio = _tidy(
@@ -164,37 +284,31 @@ def run_grid(
     )
     combined.to_csv(cfg.paths.artifacts / combined_name)
     if failed:
-        print(f"\nfailed runs: {sorted(failed)}")
+        log.warning("failed runs: %s", sorted(failed))
     return combined
 
 
-def _print_table(title: str, df: pd.DataFrame) -> None:
-    print(f"\n=== {title} ===")
+def _format_df(df: pd.DataFrame, width: int) -> str:
     with pd.option_context(
         "display.width",
-        160,
+        width,
         "display.max_columns",
         None,
         "display.float_format",
         lambda x: f"{x:.4f}",
     ):
-        print(df)
+        return df.to_string()
+
+
+def _log_table(title: str, df: pd.DataFrame) -> None:
+    log.info("%s\n%s", title, _format_df(df, 160))
 
 
 def _print_pivot(df: pd.DataFrame, metric: str) -> None:
     if metric not in df.columns:
         return
     table = df[metric].unstack("model")
-    print(f"\n=== {metric} by holding period ===")
-    with pd.option_context(
-        "display.width",
-        200,
-        "display.max_columns",
-        None,
-        "display.float_format",
-        lambda x: f"{x:.4f}",
-    ):
-        print(table)
+    log.info("%s by holding period\n%s", metric, _format_df(table, 200))
 
 
 def main() -> None:
@@ -230,14 +344,14 @@ def main() -> None:
                 raise SystemExit("--holding accepts at most one transaction cost")
             cfg = config_for_transaction_cost(cfg, args.transaction_cost_bps[0])
         results = run_experiment(cfg)
-        _print_table("Portfolio backtest", pd.DataFrame(results["portfolio_metrics"]).T)
+        _log_table("Portfolio backtest", pd.DataFrame(results["portfolio_metrics"]).T)
         return
 
     holdings = tuple(args.holdings) if args.holdings else DEFAULT_HOLDINGS
     combined = run_grid(cfg, holdings, args.transaction_cost_bps)
     for metric in ("cum_return_net", "sharpe", "max_drawdown", "avg_turnover"):
         _print_pivot(combined, metric)
-    print(f"\nartifacts written to {cfg.paths.artifacts}")
+    log.info("artifacts written to %s", cfg.paths.artifacts)
 
 
 if __name__ == "__main__":

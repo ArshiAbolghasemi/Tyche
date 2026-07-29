@@ -30,7 +30,7 @@ from tyche.common.logging import get_logger
 from tyche.portfolio.data.assemble import AlignedData
 from tyche.portfolio.config import Config
 from tyche.portfolio.model.dataset import WindowDataset
-from tyche.portfolio.model.losses import gaussian_nll, total_loss
+from tyche.portfolio.model.losses import distribution_nll, total_loss
 from tyche.portfolio.model.network import MultimodalReturnModel, Prediction
 from tyche.portfolio.data.windows import Sample
 
@@ -97,7 +97,7 @@ def _accumulate(running: dict[str, float], parts: dict[str, float]) -> None:
 
 
 @torch.no_grad()
-def _evaluate(model, loader, device) -> tuple[float, dict[str, float]]:
+def _evaluate(model, loader, device, cfg: Config) -> tuple[float, dict[str, float]]:
     """Validation NLL plus the same moment diagnostics, sample-weighted."""
     model.eval()
     total, count = 0.0, 0
@@ -106,7 +106,15 @@ def _evaluate(model, loader, device) -> tuple[float, dict[str, float]]:
         batch = _move(batch, device)
         pred = model(batch["daily"], batch["news"], batch["intraday"])
         size = len(batch["target"])
-        total += gaussian_nll(pred, batch["target"]).item() * size
+        total += (
+            distribution_nll(
+                pred,
+                batch["target"],
+                cfg.train.target_distribution,
+                cfg.train.student_t_df,
+            ).item()
+            * size
+        )
         _accumulate(running, {k: v * size for k, v in moment_stats(pred).items()})
         count += size
     denom = max(count, 1)
@@ -159,12 +167,15 @@ def train_model(
     )
 
     log.info(
-        "[%s] training on %d samples (val %d) | device=%s | params=%d",
+        "[%s] training on %d samples (val %d) | device=%s | params=%d | "
+        "target_distribution=%s df=%.2f",
         tag,
         len(train_samples),
         len(val_samples),
         device,
         sum(p.numel() for p in model.parameters()),
+        cfg.train.target_distribution,
+        cfg.train.student_t_df,
     )
 
     best_state, best_nll, history, stale = None, float("inf"), [], 0
@@ -176,7 +187,12 @@ def train_model(
             opt.zero_grad()
             pred = model(batch["daily"], batch["news"], batch["intraday"])
             loss, parts = total_loss(
-                pred, batch["target"], cfg.train.huber_lambda, cfg.train.cov_reg_lambda
+                pred,
+                batch["target"],
+                cfg.train.huber_lambda,
+                cfg.train.cov_reg_lambda,
+                cfg.train.target_distribution,
+                cfg.train.student_t_df,
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
@@ -188,7 +204,7 @@ def train_model(
         record = {"epoch": epoch, **{k: v / n_batches for k, v in running.items()}}
 
         if val_samples:
-            val_nll, val_moments = _evaluate(model, val_loader, device)
+            val_nll, val_moments = _evaluate(model, val_loader, device, cfg)
             record["val_nll"] = val_nll
             record.update({f"val_{k}": v for k, v in val_moments.items()})
         else:
