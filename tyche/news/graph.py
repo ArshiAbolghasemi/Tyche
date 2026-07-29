@@ -7,12 +7,9 @@ produces. The Summarizer compresses each article with ``facebook/bart-large-cnn`
 the Scorer then extracts sentiment for each summary with an Azure OpenAI model — one
 score per (article, ticker) row, with no span-aggregation step.
 
-Deduplication used to sit between the two, collapsing near-duplicate reprints so the
-Scorer ran once per story. It has been removed: clustering now belongs to the
-portfolio pipeline, which needs cluster membership and coverage counts as features
-rather than merely as a way to skip repeated scoring calls. The Scorer still
-deduplicates its *calls* by unique summary text, so identical reprints do not cost
-extra; what is gone is the embedding-based grouping of near-duplicates.
+There is no embedding-based deduplication stage in the active graph. The Scorer still
+caches calls by exact summary text, so identical reprints do not cost extra, but
+near-duplicate stories with distinct wording are scored separately.
 
 The summarizer node is conditional: some sources (e.g. zanista) ship a pre-computed
 ``summary`` for a subset of rows, passed through by ``ingest`` as ``summary_text``. If

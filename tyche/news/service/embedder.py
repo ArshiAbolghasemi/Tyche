@@ -1,18 +1,17 @@
-"""Agent 3 — Embedder. Summary text → dense ``BAAI/bge-m3`` embedding.
+"""Summary tokenizer/embedding helpers for ``BAAI/bge-m3``.
 
 Weights are loaded directly onto a local device (CPU/CUDA/MPS, see
 ``tyche.common.device``) — no hosted API call — so embedding throughput is bounded by
-local hardware, not an external rate limit. It exists so the Deduplicator can cluster
-near-duplicate summaries by cosine distance before the (paid) LLM sentiment call,
-collapsing reprints/syndications to one representative.
+local hardware, not an external rate limit. The active news graph no longer uses an
+embedding-based deduplication agent; the tokenizer is still shared with the
+Summarizer's ``summary_n_tokens`` diagnostic.
 
 The dense embedding follows bge-m3's documented pooling: the CLS token of the last
 hidden state, L2-normalized — so cosine similarity between two embeddings is a plain
-dot product, exactly what the Deduplicator's cosine-distance clustering assumes.
+dot product.
 
-bge-m3 has an 8192-token context window — larger than any summary the Summarizer
-emits — so summaries are embedded whole (truncation only guards pathological inputs).
-The tokenizer is shared with the Summarizer's ``summary_n_tokens`` diagnostic.
+bge-m3 has an 8192-token context window, larger than any summary the Summarizer emits
+(truncation only guards pathological inputs).
 """
 
 from __future__ import annotations
@@ -84,10 +83,7 @@ def _get_model():
 
 
 def unload_model() -> None:
-    """Release the embedding model from device memory. Call once ALL embedding work
-    for this run is done (the Deduplicator calls this after its whole per-month loop
-    finishes — not after each ``embed_texts()`` call, which would force a reload
-    every month and defeat the point of caching the loaded model)."""
+    """Release the embedding model from device memory after explicit embedding work."""
     release_device_memory(_get_device(), [_get_model])
 
 

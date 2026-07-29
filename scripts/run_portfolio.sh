@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 #
-# Run the portfolio pipeline across every holding period and collate the results.
+# Run the portfolio pipeline across holding periods and collate the results.
 #
-# The sweep runs in a single process (tyche.portfolio.sweep) rather than one process
-# per H, so the data is assembled and aligned once instead of eight times — building
-# the intraday tensor dominates startup. Per-H artifacts and the combined tables are
-# written to tyche/portfolio/artifacts.
+# Per-H artifacts and the combined tables are written to tyche/portfolio/artifacts.
 #
 #   ./scripts/run_portfolio.sh                 # default sweep: 1 2 3 5 10 20 40 60
 #   ./scripts/run_portfolio.sh 5 20 60         # only these holding periods
-#   EPOCHS=5 ./scripts/run_portfolio.sh        # short run, for smoke-testing changes
+#   COST_BPS="1 2 5 10" ./scripts/run_portfolio.sh
 
 set -euo pipefail
 
@@ -19,8 +16,13 @@ if [ ${#holdings[@]} -eq 0 ]; then
 fi
 
 args=(--holdings "${holdings[@]}")
-[ -n "${EPOCHS:-}" ] && args+=(--epochs "$EPOCHS")
 [ -n "${LOOKBACK:-}" ] && args+=(--lookback "$LOOKBACK")
+if [ -n "${COST_BPS:-}" ]; then
+    # shellcheck disable=SC2206
+    costs=(${COST_BPS})
+    args+=(--transaction-cost-bps "${costs[@]}")
+fi
 
-echo "Running portfolio sweep for holding periods: ${holdings[*]}"
-uv run python -m tyche.portfolio.sweep "${args[@]}"
+echo "Running portfolio grid for holding periods: ${holdings[*]}"
+[ -n "${COST_BPS:-}" ] && echo "Transaction cost scenarios (bps): ${COST_BPS}"
+uv run python -m tyche.portfolio.run "${args[@]}"

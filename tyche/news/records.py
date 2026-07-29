@@ -48,26 +48,10 @@ class Summary:
     n_tokens: str = "summary_n_tokens"  # bge-m3-tokenizer length of the summary
 
 
-# --- Agent 3 — Embedder output columns ---
+# --- Summary token accounting columns ---
 @dataclass(frozen=True)
 class Embedding:
     n_tokens: str = "embedding_n_tokens"  # bge-m3-tokenizer length of the summary
-
-
-# --- Deduplicator output columns (agent no longer wired into the pipeline) ---
-# Clustering moved to the portfolio side, which needs cluster membership and coverage
-# counts as model features rather than only as a way to skip repeated scoring calls.
-# These names are kept so the Scorer can still pick up ``representative_summary`` if a
-# caller supplies it, and so a parquet written by the old pipeline still parses.
-@dataclass(frozen=True)
-class Dedup:
-    month: str = "dedup_month"  # calendar-month bucket the row was deduplicated within
-    cluster_id: str = "dedup_cluster_id"  # month-scoped cluster label
-    is_representative: str = "is_representative"  # True for the cluster's seed row
-    representative_text: str = "representative_summary"  # summary that will be scored
-    # Rows in this cluster up to and including this row — coverage accumulated so far.
-    # Backward-looking by construction, so it is safe to use as a model feature.
-    cluster_size: str = "dedup_cluster_size"
 
 
 # --- Agent 5 — Scorer output columns ---
@@ -81,9 +65,9 @@ class Score:
     rationale: str = "sentiment_rationale"  # LLM's one-line justification
 
 
-# --- Agent 5 — Scorer output columns (one score per deduplicated summary, ticker) ---
+# --- Agent 5 — Scorer output columns (one score per summary, ticker) ---
 # Named ``Aggregate`` for continuity with the neutralizer/output contract; there is
-# no span-aggregation step — the (deduplicated) summary is scored directly.
+# no span-aggregation step: the summary is scored directly.
 @dataclass(frozen=True)
 class Aggregate:
     p_pos: str = "agg_p_pos"

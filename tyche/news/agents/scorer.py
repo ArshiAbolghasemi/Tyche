@@ -10,12 +10,9 @@ positive/negative/neutral probabilities for the described security, which are:
   renormalized to sum to 1), and
 * retried on transient failures with **tenacity** (exponential backoff).
 
-Calls are deduplicated by *exact* summary text, so byte-identical reprints cost a
-single API call and every row carrying that text shares the result. Near-duplicates —
-the same story reworded across outlets — are no longer collapsed: the Deduplicator that
-grouped them by embedding similarity has been removed from the pipeline, so each
-distinct wording is now scored separately. If a caller supplies a
-``representative_summary`` column anyway, it is scored in place of ``summary_text``.
+Calls are cached by *exact* summary text, so byte-identical reprints cost a single API
+call and every row carrying that text shares the result. Near-duplicates with distinct
+wording are scored separately; there is no embedding-based deduplication stage.
 
 Outputs mirror the old FinBERT contract — ``agg_p_pos/agg_p_neg/agg_p_neu`` and
 ``raw_score = p_pos - p_neg`` in ``[-1, 1]`` — so the Neutralizer and output schema are
@@ -40,7 +37,7 @@ from tqdm import tqdm
 
 from tyche.news.config import settings
 from tyche.common.logging import get_logger
-from tyche.news.records import Aggregate, Dedup, Score, Summary
+from tyche.news.records import Aggregate, Score, Summary
 
 log = get_logger(__name__)
 
@@ -202,13 +199,7 @@ def score(summarized: pd.DataFrame) -> pd.DataFrame:
     ~0 when neutral dominates), carrying every upstream column through."""
     revision = get_model_revision()
 
-    # Score a caller-supplied representative summary when present, else the summary.
-    text_col = (
-        Dedup.representative_text
-        if Dedup.representative_text in summarized.columns
-        else Summary.text
-    )
-    texts = summarized[text_col].fillna("").tolist()
+    texts = summarized[Summary.text].fillna("").tolist()
     unique_texts = list(dict.fromkeys(texts))
     log.info(
         "scoring %d rows via Azure OpenAI (%s) — %d unique summaries to score",

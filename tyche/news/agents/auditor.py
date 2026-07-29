@@ -160,8 +160,8 @@ def audit_b(ingested: pd.DataFrame) -> dict:
 
 def _score_through(ingested: pd.DataFrame) -> pd.DataFrame:
     """Summarize then score — so the raw_score reflects only the LLM's read of each
-    summary. Deduplication is deliberately skipped here: Audit B compares the SAME
-    article named vs masked, and collapsing near-duplicates would blur that pairing."""
+    summary. Audit B compares the same article named vs masked, so each paired row is
+    scored directly."""
     return scorer.score(summarizer.summarize(ingested))
 
 

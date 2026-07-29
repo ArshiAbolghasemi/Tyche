@@ -1,16 +1,9 @@
-"""End-to-end orchestrator: data -> model -> predictions -> portfolio -> comparison.
+"""Portfolio backtest runner for BL, MVO, RP, and HRP.
 
-Runs the full experiment for one holding period H: prepares the aligned/standardized
-data and chronological split, trains the proposed model plus the two ablations
-(no-news, no-intraday), saves out-of-sample predictions, evaluates the predictive
-model, then backtests the proposed strategy against equal-weight, risk parity, HRP,
-historical MVO, historical BL, and the no-BL / ablation variants under one identical
-universe, cost, and rebalance schedule. Prints two comparison tables and saves
-artifacts.
-
-Training and validation both live inside 2023-10-02..2024-12-31; the whole of 2025 is
-held out and is what the portfolio is scored on, so no part of the reported backtest
-was seen during fitting or checkpoint selection.
+The runner prepares the aligned data and chronological split, then backtests only the
+four requested allocation models under a shared universe, cost model, and rebalance
+schedule. It can run one holding period or a grid of holding periods and transaction
+costs, writing per-run artifacts plus a combined portfolio-metrics table.
 """
 
 from __future__ import annotations
@@ -23,36 +16,23 @@ import pandas as pd
 from tyche.portfolio.data.assemble import assemble
 from tyche.portfolio.allocation.backtest import run_backtest
 from tyche.portfolio.config import Config, default_config
-from tyche.portfolio.evaluation.model_metrics import evaluate_model
 from tyche.portfolio.evaluation.portfolio_metrics import evaluate_portfolio
-from tyche.portfolio.model.predict import predict
-from tyche.portfolio.data.preprocessing import apply_standardizer, fit_standardizer
 from tyche.portfolio.allocation.strategies import (
-    equal_weight,
-    historical_bl,
-    historical_mvo,
+    bl,
+    mvo,
     hrp,
-    model_bl,
-    model_no_bl,
-    risk_parity,
+    rp,
 )
-from tyche.portfolio.model.train import train_model
-from tyche.portfolio.data.windows import SplitIndex, build_splits, train_day_indices
+from tyche.portfolio.data.windows import build_splits
+
+DEFAULT_HOLDINGS: tuple[int, ...] = (1, 2, 3, 5, 10, 20, 40, 60)
 
 
 def prepare(cfg: Config):
     data = assemble(cfg)
     splits = build_splits(data, cfg)
-    std = apply_standardizer(
-        data, fit_standardizer(data, train_day_indices(splits, cfg))
-    )
     oos = splits.test if splits.test else splits.val
-    return data, std, splits, oos
-
-
-def _train_and_predict(std, splits: SplitIndex, oos, cfg, tag: str, **flags):
-    result = train_model(std, splits.train, splits.val, cfg, tag=tag, **flags)
-    return predict(result.model, std, oos)
+    return data, splits, oos
 
 
 def _rebalance_days(oos, cfg: Config) -> list[int]:
@@ -71,7 +51,7 @@ def _backtest(data, days, rebal_t, strategy, cfg: Config):
 
 
 def run_experiment(cfg: Config) -> dict:
-    data, std, splits, oos = prepare(cfg)
+    data, splits, oos = prepare(cfg)
     oos_label = "test" if splits.test else "val (no test samples)"
     print(
         f"universe={data.assets} | train={len(splits.train)} val={len(splits.val)} "
@@ -79,30 +59,14 @@ def run_experiment(cfg: Config) -> dict:
         f"T={cfg.window.lookback} | cost_model={cfg.portfolio.cost_model}"
     )
 
-    preds = {
-        "proposed": _train_and_predict(std, splits, oos, cfg, "proposed"),
-        "no_news": _train_and_predict(std, splits, oos, cfg, "no_news", use_news=False),
-        "no_intraday": _train_and_predict(
-            std, splits, oos, cfg, "no_intraday", use_intraday=False
-        ),
-    }
-    model_metrics = {k: evaluate_model(v) for k, v in preds.items()}
-
     cfg.paths.artifacts.mkdir(parents=True, exist_ok=True)
-    for name, p in preds.items():
-        p.save(cfg.paths.artifacts / f"pred_{name}_H{cfg.window.holding}.npz")
 
     rebal_t = _rebalance_days(oos, cfg)
     strategies = {
-        "proposed": model_bl(preds["proposed"], data.adj_close, cfg),
-        "equal_weight": equal_weight(data.n_assets),
-        "risk_parity": risk_parity(data.adj_close, cfg),
-        "hrp": hrp(data.adj_close, cfg),
-        "historical_mvo": historical_mvo(data.adj_close, cfg),
-        "historical_bl": historical_bl(data.adj_close, cfg),
-        "no_bl": model_no_bl(preds["proposed"], data.adj_close, cfg),
-        "no_news": model_bl(preds["no_news"], data.adj_close, cfg),
-        "no_intraday": model_bl(preds["no_intraday"], data.adj_close, cfg),
+        "BL": bl(data.adj_close, cfg),
+        "MVO": mvo(data.adj_close, cfg),
+        "RP": rp(data.adj_close, cfg),
+        "HRP": hrp(data.adj_close, cfg),
     }
     port_metrics, curves = {}, {}
     for name, strat in strategies.items():
@@ -111,14 +75,100 @@ def run_experiment(cfg: Config) -> dict:
         curves[name] = pd.Series(net.value, index=net.dates)
 
     return {
-        "model_metrics": model_metrics,
         "portfolio_metrics": port_metrics,
         "curves": curves,
     }
 
 
-def _print_table(title: str, metrics: dict[str, dict[str, float]]) -> None:
+def config_for_holding(cfg: Config, holding: int) -> Config:
+    """Return a config for one holding period with a matching split embargo."""
+    return replace(
+        cfg,
+        window=replace(
+            cfg.window, holding=holding, embargo=max(cfg.window.embargo, holding)
+        ),
+    )
+
+
+def config_for_transaction_cost(cfg: Config, cost_bps: float) -> Config:
+    """Return a config with only the explicit transaction-cost component changed."""
+    return replace(
+        cfg,
+        portfolio=replace(cfg.portfolio, transaction_cost_bps=float(cost_bps)),
+    )
+
+
+def _cost_label(cost_bps: float) -> str:
+    return f"{cost_bps:g}".replace(".", "p")
+
+
+def _tidy(
+    metrics: dict[str, dict[str, float]], holding: int, cost_bps: float | None = None
+) -> pd.DataFrame:
     df = pd.DataFrame(metrics).T
+    df.index.name = "model"
+    df = df.reset_index().assign(holding=holding)
+    index_cols = ["holding", "model"]
+    if cost_bps is not None:
+        df = df.assign(transaction_cost_bps=float(cost_bps))
+        index_cols = ["transaction_cost_bps", *index_cols]
+    return df.set_index(index_cols)
+
+
+def run_grid(
+    cfg: Config,
+    holdings: tuple[int, ...] = DEFAULT_HOLDINGS,
+    transaction_cost_bps: tuple[float, ...] | None = None,
+) -> pd.DataFrame:
+    """Run the requested holding/cost grid and write portfolio artifacts."""
+    cfg.paths.artifacts.mkdir(parents=True, exist_ok=True)
+    frames: list[pd.DataFrame] = []
+    failed: dict[tuple[float, int], str] = {}
+    costs = transaction_cost_bps or (cfg.portfolio.transaction_cost_bps,)
+    multi_cost = len(costs) > 1
+
+    for cost_bps in costs:
+        cost_cfg = config_for_transaction_cost(cfg, cost_bps)
+        for holding in holdings:
+            print(f"\n=== transaction cost {cost_bps:g} bps | H={holding} ===")
+            try:
+                results = run_experiment(config_for_holding(cost_cfg, holding))
+            except Exception as exc:
+                failed[(float(cost_bps), holding)] = str(exc)
+                print(f"FAILED cost={cost_bps:g} H={holding}: {exc}")
+                continue
+
+            portfolio = _tidy(
+                results["portfolio_metrics"],
+                holding,
+                cost_bps if multi_cost else None,
+            )
+            frames.append(portfolio)
+
+            suffix = (
+                f"_C{_cost_label(cost_bps)}_H{holding}"
+                if multi_cost
+                else f"_H{holding}"
+            )
+            portfolio.to_csv(cfg.paths.artifacts / f"portfolio_metrics{suffix}.csv")
+            pd.DataFrame(results["curves"]).to_csv(
+                cfg.paths.artifacts / f"equity_curves{suffix}.csv"
+            )
+
+    if not frames:
+        raise RuntimeError(f"every portfolio run failed: {failed}")
+
+    combined = pd.concat(frames).sort_index()
+    combined_name = (
+        "cost_portfolio_metrics.csv" if multi_cost else "portfolio_metrics.csv"
+    )
+    combined.to_csv(cfg.paths.artifacts / combined_name)
+    if failed:
+        print(f"\nfailed runs: {sorted(failed)}")
+    return combined
+
+
+def _print_table(title: str, df: pd.DataFrame) -> None:
     print(f"\n=== {title} ===")
     with pd.option_context(
         "display.width",
@@ -131,31 +181,63 @@ def _print_table(title: str, metrics: dict[str, dict[str, float]]) -> None:
         print(df)
 
 
+def _print_pivot(df: pd.DataFrame, metric: str) -> None:
+    if metric not in df.columns:
+        return
+    table = df[metric].unstack("model")
+    print(f"\n=== {metric} by holding period ===")
+    with pd.option_context(
+        "display.width",
+        200,
+        "display.max_columns",
+        None,
+        "display.float_format",
+        lambda x: f"{x:.4f}",
+    ):
+        print(table)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Multimodal portfolio pipeline")
-    ap.add_argument("--holding", type=int, default=None, help="H (holding period)")
-    ap.add_argument("--epochs", type=int, default=None)
+    ap.add_argument("--holding", type=int, default=None, help="single H")
+    ap.add_argument(
+        "--holdings",
+        type=int,
+        nargs="+",
+        default=None,
+        help="holding periods to run (default: 1 2 3 5 10 20 40 60)",
+    )
     ap.add_argument("--lookback", type=int, default=None)
+    ap.add_argument(
+        "--transaction-cost-bps",
+        type=float,
+        nargs="+",
+        default=None,
+        help="transaction-cost scenarios in bps (slippage is left unchanged)",
+    )
     args = ap.parse_args()
 
     cfg = default_config()
-    if args.holding is not None:
-        cfg = replace(
-            cfg,
-            window=replace(
-                cfg.window,
-                holding=args.holding,
-                embargo=max(cfg.window.embargo, args.holding),
-            ),
-        )
     if args.lookback is not None:
         cfg = replace(cfg, window=replace(cfg.window, lookback=args.lookback))
-    if args.epochs is not None:
-        cfg = replace(cfg, train=replace(cfg.train, epochs=args.epochs))
+    if args.holding is not None and args.holdings is not None:
+        raise SystemExit("use either --holding or --holdings, not both")
 
-    results = run_experiment(cfg)
-    _print_table("Predictive model", results["model_metrics"])
-    _print_table("Portfolio backtest", results["portfolio_metrics"])
+    if args.holding is not None:
+        cfg = config_for_holding(cfg, args.holding)
+        if args.transaction_cost_bps:
+            if len(args.transaction_cost_bps) != 1:
+                raise SystemExit("--holding accepts at most one transaction cost")
+            cfg = config_for_transaction_cost(cfg, args.transaction_cost_bps[0])
+        results = run_experiment(cfg)
+        _print_table("Portfolio backtest", pd.DataFrame(results["portfolio_metrics"]).T)
+        return
+
+    holdings = tuple(args.holdings) if args.holdings else DEFAULT_HOLDINGS
+    combined = run_grid(cfg, holdings, args.transaction_cost_bps)
+    for metric in ("cum_return_net", "sharpe", "max_drawdown", "avg_turnover"):
+        _print_pivot(combined, metric)
+    print(f"\nartifacts written to {cfg.paths.artifacts}")
 
 
 if __name__ == "__main__":

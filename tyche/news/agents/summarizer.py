@@ -4,8 +4,8 @@ Replaces the old sentence-Segmentation stage. Instead of exploding an article in
 sentence spans, we compress the whole article to a short summary with
 ``facebook/bart-large-cnn`` — weights loaded directly onto a local device
 (CPU/CUDA/MPS, see ``tyche.common.device``) — and hand that single summary to the
-Embedder/Scorer, so there is one sentiment score per (article, ticker) and no
-downstream aggregation.
+Scorer, so there is one sentiment score per (article, ticker) and no downstream
+aggregation.
 
 BART's positional embeddings cap the input at 1024 tokens; the local ``generate()``
 call does not truncate for us any more gracefully than a hosted endpoint would
@@ -21,10 +21,9 @@ Design guards
 * Map-reduce chunking (not truncation) for inputs over the BART token limit — no
   positional-index overflow, and no information silently dropped from the tail of
   long articles.
-* The summary now feeds the Embedder (``BAAI/bge-m3``, 8192-token context) and the
-  LLM sentiment Scorer, so ``max_length`` (config) no longer has to fit FinBERT's old
-  512-token window and can retain more of the article; a bge-m3-tokenizer length guard
-  in the Embedder is the belt-and-braces backstop.
+* The summary now feeds the LLM sentiment Scorer, so ``max_length`` (config) no longer
+  has to fit FinBERT's old 512-token window and can retain more of the article; a
+  bge-m3-tokenizer length guard is the belt-and-braces backstop.
 * ``min_length`` protects against over-compression that would drop information.
 * Beam search with no sampling (``do_sample=False``) keeps output deterministic → the
   same article always yields the same summary, preserving Audit C's causal
@@ -345,7 +344,7 @@ def summarize(ingested: pd.DataFrame) -> pd.DataFrame:
     log.info(
         "summarized %d rows (%d reused pre-existing summaries, %d passthrough short "
         "articles, %d batch failures fell back to verbatim); summary tokens min=%d "
-        "mean=%.1f max=%d; %d over bge-m3's %d-token limit (embedder will guard)",
+        "mean=%.1f max=%d; %d over bge-m3's %d-token limit",
         len(out),
         n_reused,
         len(passthrough_texts),

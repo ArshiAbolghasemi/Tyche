@@ -71,12 +71,11 @@ class SummarizerConfig:
     loaded directly onto a local device (CPU/CUDA/MPS) — no hosted API call — so
     throughput is bounded by local hardware, not an external rate limit.
 
-    Downstream, the summary is embedded with ``BAAI/bge-m3`` (8192-token context) for
-    dedup and read by the LLM sentiment scorer — neither of which imposes FinBERT's
-    old 512-token cap — so ``max_length`` can be larger, retaining more of the
-    article. ``min_length`` still guards against over-compression that would drop
-    information. Beam search (no sampling) keeps output deterministic — important
-    for Audit C.
+    Downstream, the summary is read by the LLM sentiment scorer. A bge-m3 tokenizer is
+    still used as a length guard for feature compatibility, but there is no
+    embedding-based deduplication agent in the active graph. ``min_length`` still
+    guards against over-compression that would drop information. Beam search (no
+    sampling) keeps output deterministic, which is important for Audit C.
     """
 
     name: str = field(
@@ -90,10 +89,9 @@ class SummarizerConfig:
     min_length: int = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_MIN_LENGTH", 80, int)
     )
-    # Bumped from 200 → 512: the summary now feeds bge-m3 (8192-token context) and an
-    # LLM sentiment scorer, so it no longer has to fit FinBERT's 512-token window and
-    # can retain more of the article. Still well under bart-large-cnn's 1024-token
-    # generation limit.
+    # Bumped from 200 to 512: the summary now feeds an LLM sentiment scorer, so it no
+    # longer has to fit FinBERT's 512-token window and can retain more of the article.
+    # Still well under bart-large-cnn's 1024-token generation limit.
     max_length: int = field(
         default_factory=lambda: _env("TYCHE_SUMMARIZER_MAX_LENGTH", 512, int)
     )
@@ -123,15 +121,11 @@ class SummarizerConfig:
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
-    """Agent 3 — Embedder. Weights for ``BAAI/bge-m3`` are loaded directly onto a
-    local device (CPU/CUDA/MPS) — no hosted API call.
+    """Tokenizer/model settings for summary token accounting.
 
-    Summaries are embedded into dense vectors so near-duplicate articles can be
-    clustered and collapsed before the (paid) LLM sentiment call. bge-m3 has an
-    8192-token context window — comfortably larger than any summary the summarizer
-    emits — so summaries are embedded whole; ``max_tokens`` is only a defensive guard.
-    The dense embedding is CLS-token pooling + L2 normalization (bge-m3's documented
-    pooling), so cosine similarity is a plain dot product on the returned vectors.
+    The active graph no longer embeds summaries for deduplication, but the bge-m3
+    tokenizer remains useful as a defensive length guard for summaries consumed
+    downstream.
     """
 
     name: str = field(
@@ -146,38 +140,10 @@ class EmbeddingConfig:
     max_tokens: int = field(
         default_factory=lambda: _env("TYCHE_EMBEDDING_MAX_TOKENS", 8192, int)
     )
-    # Local forward-pass batch size — the GPU-throughput knob now that inference runs
-    # on-device instead of over a thread pool of hosted API calls.
+    # Local forward-pass batch size if embeddings are explicitly requested.
     batch_size: int = field(
         default_factory=lambda: _env("TYCHE_EMBEDDING_BATCH_SIZE", 32, int)
     )
-
-
-@dataclass(frozen=True)
-class DedupConfig:
-    """Agent 4 — Deduplicator. Collapses near-duplicate summaries so each cluster of
-    reprints/syndications costs a single sentiment call.
-
-    News is deduplicated one calendar month at a time (``window``): within a month,
-    unique summaries are embedded and clustered **online in publication order** — each
-    summary joins the nearest existing cluster or opens a new one — and each cluster is
-    represented by its **seed**, the earliest member. Every row inherits its cluster
-    seed's summary, so downstream scoring is done once per cluster and the score is
-    shared across the cluster's members.
-
-    Online assignment (rather than clustering the month as a batch) keeps the pipeline
-    causal: a row's cluster, representative, and score are fixed by articles published
-    at or before its own timestamp, never by later ones.
-    """
-
-    # Cosine-distance threshold for cluster assignment: a summary within this distance
-    # of a cluster's running centroid is treated as the same story. Lower ⇒ stricter
-    # (more, tighter clusters); ~0.10–0.20 captures reprints without merging stories.
-    distance_threshold: float = field(
-        default_factory=lambda: _env("TYCHE_DEDUP_DISTANCE_THRESHOLD", 0.15, float)
-    )
-    # Pandas period-frequency alias for the dedup window; "M" = calendar month.
-    window: str = field(default_factory=lambda: _env("TYCHE_DEDUP_WINDOW", "M"))
 
 
 _DEFAULT_SENTIMENT_SYSTEM_PROMPT = """\
@@ -217,11 +183,11 @@ Respond ONLY via the structured schema you are given."""
 class SentimentConfig:
     """Agent 5 — Sentiment scorer (Azure OpenAI ``gpt-4.0-mini`` via LangChain).
 
-    Replaces FinBERT: the deduplicated summary is sent to an Azure OpenAI chat model
-    with a comprehensive financial-sentiment system prompt, and the model returns
-    calibrated positive/negative/neutral probabilities (validated with pydantic,
-    retried with tenacity). ``endpoint``/``deployment``/``api_version`` reconstruct
-    the Azure REST URL; ``api_key`` must be supplied via env (never hardcoded).
+    Replaces FinBERT: the summary is sent to an Azure OpenAI chat model with a
+    comprehensive financial-sentiment system prompt, and the model returns calibrated
+    positive/negative/neutral probabilities (validated with pydantic, retried with
+    tenacity). ``endpoint``/``deployment``/``api_version`` reconstruct the Azure REST
+    URL; ``api_key`` must be supplied via env (never hardcoded).
     """
 
     endpoint: str = field(
@@ -249,8 +215,8 @@ class SentimentConfig:
     request_timeout: float = field(
         default_factory=lambda: _env("TYCHE_SENTIMENT_TIMEOUT", 60.0, float)
     )
-    # Concurrent sentiment calls (thread pool; I/O bound). One call per unique cluster
-    # representative, so this is the effective sentiment-throughput knob.
+    # Concurrent sentiment calls (thread pool; I/O bound). One call per unique summary
+    # string, so this is the effective sentiment-throughput knob.
     max_workers: int = field(
         default_factory=lambda: _env("TYCHE_SENTIMENT_MAX_WORKERS", 8, int)
     )
@@ -399,10 +365,6 @@ class NewsSettings(Dynaconf):
     @property
     def embedding(self) -> EmbeddingConfig:
         return EmbeddingConfig()
-
-    @property
-    def dedup(self) -> DedupConfig:
-        return DedupConfig()
 
     @property
     def sentiment(self) -> SentimentConfig:

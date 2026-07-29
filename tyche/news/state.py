@@ -16,7 +16,6 @@ class PipelineState(TypedDict, total=False):
     input_path: Optional[str]
     ingested: pd.DataFrame
     summarized: pd.DataFrame
-    deduplicated: pd.DataFrame
     scored: pd.DataFrame
     neutralized: pd.DataFrame
     audit: dict
