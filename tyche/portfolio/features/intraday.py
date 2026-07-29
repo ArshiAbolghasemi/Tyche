@@ -67,13 +67,13 @@ def build_intraday_tensor(
 ) -> tuple[np.ndarray, dict[tuple[str, pd.Timestamp], int]]:
     """Return ``(tensor, index)`` where ``tensor`` has shape
     ``(n_asset_days, max_bars, n_features)`` and ``index`` maps
-    ``(asset, date) -> row``. Days are right-padded with zeros to ``max_bars``."""
+    ``(asset, datetime) -> row``. Days are right-padded with zeros to ``max_bars``."""
     max_bars = cfg.intraday.max_bars_per_day
     n_feat = len(INTRADAY_FEATURES)
     rows: list[np.ndarray] = []
     index: dict[tuple[str, pd.Timestamp], int] = {}
 
-    for (asset, date), bars in intraday.groupby(["asset", "date"], sort=True):
+    for (asset, date), bars in intraday.groupby(["asset", "datetime"], sort=True):
         res = _resample_day(bars, cfg.intraday.resample)
         if res.empty:
             continue
