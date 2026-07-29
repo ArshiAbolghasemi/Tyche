@@ -70,6 +70,7 @@ class NewsFeatureConfig:
     """Portfolio-side news-story clustering before daily aggregation."""
 
     dedup_enabled: bool = True
+    dedup_lookback_days: int = 30
     dedup_similarity_threshold: float = 0.90
 
 
@@ -90,7 +91,7 @@ class TrainConfig:
     batch_size: int = 32
     lr: float = 1e-3
     weight_decay: float = 1e-5
-    target_distribution: str = "gaussian"  # gaussian | student_t
+    target_distribution: str = "student_t"  # gaussian | student_t
     student_t_df: float = 5.0  # degrees of freedom; must be > 2 for finite covariance
     huber_lambda: float = 1.0  # lambda_1
     cov_reg_lambda: float = 1e-3  # lambda_2

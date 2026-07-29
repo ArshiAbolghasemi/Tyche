@@ -1,10 +1,11 @@
 """News feature branch — centroid-representative story sentiment.
 
-For each ``(stock, trading-day)`` this first clusters near-duplicate article summaries
-with local text embeddings. Each cluster is treated as one news story, represented by
-the article closest to the cluster centroid. Daily features then use only those
-representative article scores: the mean representative sentiment and the log number of
-unique story clusters.
+For each ``(stock, trading-day)`` this looks back over a configurable one-month
+selection window, clusters near-duplicate article summaries with local text embeddings,
+and treats each cluster as one news story. Each cluster is represented by the article
+closest to the cluster centroid. Daily features then use only those representative
+article scores: the mean representative sentiment and the log number of unique story
+clusters in the trailing selection window.
 
 Every feature is built from articles published at or before the trading day it lands
 on. Days with no news are zeros — never forward-filled.
@@ -76,37 +77,80 @@ def _representative_indices(
     return [*keep_rows, *[embed_rows[i] for i in reps]]
 
 
-def _deduplicate_articles(df: pd.DataFrame, cfg: Config) -> pd.DataFrame:
-    if df.empty or not cfg.news.dedup_enabled:
-        return df
-
+def _embedding_lookup(df: pd.DataFrame) -> dict[str, np.ndarray]:
     text = df["summary_text"].fillna("").astype(str).str.strip()
     unique_texts = list(dict.fromkeys(t for t in text if t))
     if not unique_texts:
-        return df
+        return {}
 
     embeddings = embed_texts(unique_texts)
-    embedding_by_text = {
+    return {
         text: embeddings[i].astype(np.float32) for i, text in enumerate(unique_texts)
     }
 
-    keep: list[int] = []
-    for _, group in df.groupby(["asset", "date"], sort=False):
-        keep.extend(
-            _representative_indices(
-                group,
-                embedding_by_text,
-                cfg.news.dedup_similarity_threshold,
-            )
-        )
 
-    out = df.loc[keep].sort_values(["asset", "date", "ts"]).reset_index(drop=True)
-    log.info(
-        "news deduplication kept %d centroid representatives from %d articles",
-        len(out),
-        len(df),
+def _representative_window_features(
+    window: pd.DataFrame,
+    embedding_by_text: dict[str, np.ndarray],
+    cfg: Config,
+) -> tuple[float, int]:
+    keep = _representative_indices(
+        window,
+        embedding_by_text,
+        cfg.news.dedup_similarity_threshold,
     )
-    return out
+    scores = window.loc[keep, "sentiment_final"].astype(float)
+    return float(scores.mean()), int(len(scores))
+
+
+def _aggregate_selection_windows(
+    df: pd.DataFrame,
+    trading_days: pd.DatetimeIndex,
+    cfg: Config,
+) -> pd.DataFrame:
+    """Aggregate representative stories from the trailing selection window."""
+    if df.empty:
+        return pd.DataFrame(columns=["asset", "date", "mean_sent", "n_articles"])
+
+    if not cfg.news.dedup_enabled:
+        return _aggregate(df)
+
+    embedding_by_text = _embedding_lookup(df)
+    lookback = pd.Timedelta(days=int(cfg.news.dedup_lookback_days))
+    rows: list[dict] = []
+    total_representatives = 0
+
+    for asset, asset_df in df.groupby("asset", sort=True):
+        asset_df = asset_df.sort_values(["date", "ts"])
+        for date in trading_days:
+            start = date - lookback
+            window = asset_df[(asset_df["date"] > start) & (asset_df["date"] <= date)]
+            if window.empty:
+                continue
+            mean_sent, n_articles = _representative_window_features(
+                window,
+                embedding_by_text,
+                cfg,
+            )
+            total_representatives += n_articles
+            rows.append(
+                {
+                    "asset": asset,
+                    "date": date,
+                    "mean_sent": mean_sent,
+                    "n_articles": n_articles,
+                }
+            )
+
+    log.info(
+        "news deduplication used %d centroid representatives across %d "
+        "asset-day selection windows from %d articles (lookback=%d days)",
+        total_representatives,
+        len(rows),
+        len(df),
+        cfg.news.dedup_lookback_days,
+    )
+    return pd.DataFrame(rows, columns=["asset", "date", "mean_sent", "n_articles"])
 
 
 def _aggregate(df: pd.DataFrame) -> pd.DataFrame:
@@ -137,15 +181,13 @@ def build_news_features(
     valid = pos < len(trading_days)
     df = df[valid].copy()
     df["date"] = trading_days[pos[valid]]
-    df = _deduplicate_articles(df, cfg)
-
-    agg = _aggregate(df)
 
     # Dense grid over (assets seen in news) x trading_days, so no-news days exist.
     assets = sorted(df["asset"].unique())
     grid = pd.MultiIndex.from_product(
         [assets, trading_days], names=["asset", "date"]
     ).to_frame(index=False)
+    agg = _aggregate_selection_windows(df, trading_days, cfg)
     out = grid.merge(agg, on=["asset", "date"], how="left")
 
     for col in ("mean_sent", "n_articles"):
