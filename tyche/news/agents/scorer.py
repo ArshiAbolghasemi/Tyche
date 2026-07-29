@@ -1,4 +1,4 @@
-"""Agent 5 — Scorer. Deduplicated summary → financial sentiment probabilities.
+"""Agent 5 — Scorer. Article summary → financial sentiment probabilities.
 
 This is the only agent that calls the sentiment model. Sentiment is extracted by an
 **Azure OpenAI** chat model (``gpt-4o-mini``) reached through **LangChain**
@@ -10,11 +10,16 @@ positive/negative/neutral probabilities for the described security, which are:
   renormalized to sum to 1), and
 * retried on transient failures with **tenacity** (exponential backoff).
 
-Only the *unique cluster representatives* produced by the Deduplicator are scored;
-every row inherits its representative's score, so near-duplicate reprints cost a
-single API call. Outputs mirror the old FinBERT contract — ``agg_p_pos/agg_p_neg/
-agg_p_neu`` and ``raw_score = p_pos - p_neg`` in ``[-1, 1]`` — so the Neutralizer and
-output schema are unchanged.
+Calls are deduplicated by *exact* summary text, so byte-identical reprints cost a
+single API call and every row carrying that text shares the result. Near-duplicates —
+the same story reworded across outlets — are no longer collapsed: the Deduplicator that
+grouped them by embedding similarity has been removed from the pipeline, so each
+distinct wording is now scored separately. If a caller supplies a
+``representative_summary`` column anyway, it is scored in place of ``summary_text``.
+
+Outputs mirror the old FinBERT contract — ``agg_p_pos/agg_p_neg/agg_p_neu`` and
+``raw_score = p_pos - p_neg`` in ``[-1, 1]`` — so the Neutralizer and output schema are
+unchanged.
 """
 
 from __future__ import annotations
@@ -190,20 +195,20 @@ def _score_unique(texts: list[str]) -> dict[str, tuple[float, float, float, str]
     return cache
 
 
-def score(deduplicated: pd.DataFrame) -> pd.DataFrame:
-    """Score each row's cluster-representative summary through Azure OpenAI — one call
-    per unique representative, shared across the cluster's members. Emits per-row
+def score(summarized: pd.DataFrame) -> pd.DataFrame:
+    """Score each row's summary through Azure OpenAI — one call per unique summary
+    text, shared across every row carrying it. Emits per-row
     ``agg_p_pos/agg_p_neg/agg_p_neu`` and ``raw_score = p_pos - p_neg`` (in [-1, 1],
     ~0 when neutral dominates), carrying every upstream column through."""
     revision = get_model_revision()
 
-    # Score the deduplicated representative when present; otherwise the raw summary.
+    # Score a caller-supplied representative summary when present, else the summary.
     text_col = (
         Dedup.representative_text
-        if Dedup.representative_text in deduplicated.columns
+        if Dedup.representative_text in summarized.columns
         else Summary.text
     )
-    texts = deduplicated[text_col].fillna("").tolist()
+    texts = summarized[text_col].fillna("").tolist()
     unique_texts = list(dict.fromkeys(texts))
     log.info(
         "scoring %d rows via Azure OpenAI (%s) — %d unique summaries to score",
@@ -214,7 +219,7 @@ def score(deduplicated: pd.DataFrame) -> pd.DataFrame:
     cache = _score_unique(unique_texts)
 
     triplets = np.array([cache[t][:3] for t in texts], dtype=float).reshape(-1, 3)
-    out = deduplicated.copy()
+    out = summarized.copy()
     out[Aggregate.p_pos] = triplets[:, 0]
     out[Aggregate.p_neg] = triplets[:, 1]
     out[Aggregate.p_neu] = triplets[:, 2]

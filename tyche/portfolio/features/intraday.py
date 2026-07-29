@@ -73,7 +73,7 @@ def build_intraday_tensor(
     rows: list[np.ndarray] = []
     index: dict[tuple[str, pd.Timestamp], int] = {}
 
-    for (asset, date), bars in intraday.groupby(["asset", "Datetime"], sort=True):
+    for (asset, date), bars in intraday.groupby(["asset", "date"], sort=True):
         res = _resample_day(bars, cfg.intraday.resample)
         if res.empty:
             continue

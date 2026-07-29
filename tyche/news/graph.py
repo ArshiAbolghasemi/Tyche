@@ -1,18 +1,23 @@
 """The agent DAG, wired as a LangGraph ``StateGraph``.
 
-    ingest → [summarizer] → deduplicator → scorer → neutralizer → auditor → END
+    ingest → [summarizer] → scorer → neutralizer → auditor → END
 
 Each node is a thin wrapper that calls one agent and returns the state key it
 produces. The Summarizer compresses each article with ``facebook/bart-large-cnn``;
-the Deduplicator embeds those summaries with ``BAAI/bge-m3`` and collapses monthly
-near-duplicates to one cluster representative; the Scorer then extracts sentiment for
-each representative with an Azure OpenAI model — one score per (article, ticker) row,
-shared across a cluster, with no span-aggregation step.
+the Scorer then extracts sentiment for each summary with an Azure OpenAI model — one
+score per (article, ticker) row, with no span-aggregation step.
+
+Deduplication used to sit between the two, collapsing near-duplicate reprints so the
+Scorer ran once per story. It has been removed: clustering now belongs to the
+portfolio pipeline, which needs cluster membership and coverage counts as features
+rather than merely as a way to skip repeated scoring calls. The Scorer still
+deduplicates its *calls* by unique summary text, so identical reprints do not cost
+extra; what is gone is the embedding-based grouping of near-duplicates.
 
 The summarizer node is conditional: some sources (e.g. zanista) ship a pre-computed
 ``summary`` for a subset of rows, passed through by ``ingest`` as ``summary_text``. If
 every ingested row already has one, the summarizer node — and its BART model load — is
-skipped entirely and ``ingested`` flows straight to the deduplicator as ``summarized``.
+skipped entirely and ``ingested`` flows straight to the scorer as ``summarized``.
 Otherwise the summarizer node runs, and it internally reuses any pre-existing
 ``summary_text`` per row and only generates the ones still missing.
 """
@@ -23,7 +28,6 @@ from langgraph.graph import END, START, StateGraph
 
 from tyche.news.agents import (
     auditor,
-    deduplicator,
     ingest,
     neutralizer,
     scorer,
@@ -45,7 +49,7 @@ def _needs_summarizer(state: PipelineState) -> str:
         return "summarizer"
     if df[Summary.text].fillna("").eq("").any():
         return "summarizer"
-    return "deduplicator"
+    return "scorer"
 
 
 def _summarize(state: PipelineState) -> dict:
@@ -56,12 +60,8 @@ def _skip_summarizer(state: PipelineState) -> dict:
     return {"summarized": state["ingested"]}
 
 
-def _deduplicate(state: PipelineState) -> dict:
-    return {"deduplicated": deduplicator.deduplicate(state["summarized"])}
-
-
 def _score(state: PipelineState) -> dict:
-    return {"scored": scorer.score(state["deduplicated"])}
+    return {"scored": scorer.score(state["summarized"])}
 
 
 def _neutralize(state: PipelineState) -> dict:
@@ -79,7 +79,6 @@ def build_graph():
     graph.add_node("ingest", _ingest)
     graph.add_node("summarizer", _summarize)
     graph.add_node("skip_summarizer", _skip_summarizer)
-    graph.add_node("deduplicator", _deduplicate)
     graph.add_node("scorer", _score)
     graph.add_node("neutralizer", _neutralize)
     graph.add_node("auditor", _audit)
@@ -88,11 +87,10 @@ def build_graph():
     graph.add_conditional_edges(
         "ingest",
         _needs_summarizer,
-        {"summarizer": "summarizer", "deduplicator": "skip_summarizer"},
+        {"summarizer": "summarizer", "scorer": "skip_summarizer"},
     )
-    graph.add_edge("summarizer", "deduplicator")
-    graph.add_edge("skip_summarizer", "deduplicator")
-    graph.add_edge("deduplicator", "scorer")
+    graph.add_edge("summarizer", "scorer")
+    graph.add_edge("skip_summarizer", "scorer")
     graph.add_edge("scorer", "neutralizer")
     graph.add_edge("neutralizer", "auditor")
     graph.add_edge("auditor", END)

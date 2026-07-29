@@ -1,15 +1,19 @@
 """News feature branch — sentiment plus coverage intensity.
 
 For each ``(stock, trading-day)`` this reduces that stock's articles to a small set of
-causal features. Sentiment alone throws away how *loudly* a story was covered: a mean
-over articles is identical whether one outlet ran it or fifty. Coverage volume and the
-size a story had already accumulated are what restore that, and both are documented
-predictors of subsequent drift and volatility.
+causal features. Sentiment alone throws away how *loudly* something was covered: a mean
+over articles is identical whether one outlet ran a story or fifty. ``log_n_articles``
+restores that, and coverage volume is a documented predictor of subsequent drift and
+volatility.
+
+Volume here is a raw article count, not a story count. With the news pipeline's
+deduplicator removed, nothing groups reprints of the same story, so fifty syndications
+of one headline and fifty distinct headlines look identical on this axis. Separating
+them needs clustering on the portfolio side; when that lands, story counts and
+accumulated-coverage features belong here alongside the raw count.
 
 Every feature is built from articles published at or before the trading day it lands
-on. ``dedup_cluster_size`` counts a story's articles *up to and including* the row, so
-it never reveals how big the story eventually became. Days with no news are zeros with
-``no_news = 1`` — never forward-filled.
+on. Days with no news are zeros with ``no_news = 1`` — never forward-filled.
 """
 
 from __future__ import annotations
@@ -24,8 +28,6 @@ NEWS_FEATURES: list[str] = [
     "no_news",
     "sent_dispersion",
     "log_n_articles",
-    "log_n_new_stories",
-    "log_max_cluster_size",
 ]
 
 
@@ -34,13 +36,9 @@ def _aggregate(df: pd.DataFrame) -> pd.DataFrame:
     grouped = df.groupby(["asset", "date"])
     agg = grouped.agg(
         mean_sent=("sentiment_final", "mean"),
-        # Disagreement across the day's stories; a single article has no dispersion.
+        # Disagreement across the day's articles; a single article has no dispersion.
         sent_dispersion=("sentiment_final", "std"),
         n_articles=("sentiment_final", "size"),
-        # Cluster seeds landing today — stories *breaking*, as opposed to continuing.
-        n_new_stories=("is_representative", "sum"),
-        # How much coverage the day's largest running story had accumulated by now.
-        max_cluster_size=("dedup_cluster_size", "max"),
     ).reset_index()
     agg["sent_dispersion"] = agg["sent_dispersion"].fillna(0.0)
     return agg
@@ -73,14 +71,11 @@ def build_news_features(
     out = grid.merge(agg, on=["asset", "date"], how="left")
 
     out["no_news"] = out["mean_sent"].isna().astype(np.float32)
-    for col in ("mean_sent", "sent_dispersion", "n_articles", "n_new_stories"):
+    for col in ("mean_sent", "sent_dispersion", "n_articles"):
         out[col] = out[col].fillna(0.0)
-    out["max_cluster_size"] = out["max_cluster_size"].fillna(0.0)
 
-    # Counts are heavily right-skewed — a handful of days carry an order of magnitude
-    # more coverage than the median — so they enter on a log scale.
+    # Article counts are heavily right-skewed — a handful of days carry an order of
+    # magnitude more coverage than the median — so they enter on a log scale.
     out["log_n_articles"] = np.log1p(out["n_articles"])
-    out["log_n_new_stories"] = np.log1p(out["n_new_stories"])
-    out["log_max_cluster_size"] = np.log1p(out["max_cluster_size"])
 
     return out[["asset", "date", *NEWS_FEATURES]]

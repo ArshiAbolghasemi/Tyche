@@ -20,7 +20,6 @@ from tyche.news.config import settings
 from tyche.common.logging import configure_logging, get_logger
 from tyche.news.agents import (
     auditor,
-    deduplicator,
     ingest,
     neutralizer,
     scorer,
@@ -63,8 +62,7 @@ def run(
         # Bounded run: ingest a slice directly, then push it through the same
         # agents the graph would use (skips re-reading the full feed via state).
         ingested = _ingest_limited(input_path, limit)
-        deduplicated = deduplicator.deduplicate(summarizer.summarize(ingested))
-        scored = scorer.score(deduplicated)
+        scored = scorer.score(summarizer.summarize(ingested))
         neutralized = neutralizer.neutralize(scored)
         auditor.audit_d(neutralized)
     else:
@@ -106,8 +104,7 @@ def main() -> None:
         auditor.audit_b(_ingest_limited(args.input, args.limit))
     elif args.command == "audit-c":
         ingested = _ingest_limited(args.input, args.limit)
-        deduplicated = deduplicator.deduplicate(summarizer.summarize(ingested))
-        scored = scorer.score(deduplicated)
+        scored = scorer.score(summarizer.summarize(ingested))
         auditor.audit_c(scored)
         log.info("audit-c OK")
 

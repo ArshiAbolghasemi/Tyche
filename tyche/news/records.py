@@ -54,10 +54,11 @@ class Embedding:
     n_tokens: str = "embedding_n_tokens"  # bge-m3-tokenizer length of the summary
 
 
-# --- Agent 4 — Deduplicator output columns ---
-# Near-duplicate summaries (reprints/syndications) are clustered per month, online and
-# in publication order; every row inherits its cluster seed's summary so the sentiment
-# call runs once per cluster and the score is shared across the cluster's members.
+# --- Deduplicator output columns (agent no longer wired into the pipeline) ---
+# Clustering moved to the portfolio side, which needs cluster membership and coverage
+# counts as model features rather than only as a way to skip repeated scoring calls.
+# These names are kept so the Scorer can still pick up ``representative_summary`` if a
+# caller supplies it, and so a parquet written by the old pipeline still parses.
 @dataclass(frozen=True)
 class Dedup:
     month: str = "dedup_month"  # calendar-month bucket the row was deduplicated within
@@ -120,10 +121,6 @@ OUTPUT_COLUMNS: list[str] = [
     Aggregate.raw_score,
     Neutralize.sentiment_final,
     Summary.text,
-    Dedup.representative_text,
-    Dedup.is_representative,
-    Dedup.cluster_id,
-    Dedup.cluster_size,
     Score.rationale,
     Neutralize.entity_prior_applied,
     Neutralize.shrinkage_weight_w,
