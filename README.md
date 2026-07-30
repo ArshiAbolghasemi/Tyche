@@ -1,1 +1,55 @@
 # Tyche
+
+Tyche is a two-stage research pipeline that turns raw financial news and market
+data into backtested portfolio allocations.
+
+1. **News-sentiment extraction** — an agentic pipeline (LangGraph + Azure OpenAI)
+   ingests raw news, summarizes each article, scores financial sentiment, and
+   neutralizes systematic bias to produce a clean per-(article, ticker) sentiment
+   contract.
+2. **Portfolio construction** — a multimodal deep-learning model fuses daily
+   OHLCV, intraday OHLCV, and news-sentiment features into a predicted
+   return distribution (mean + covariance) per rebalance date. Those forecasts
+   drive six allocation strategies (EW, BL, Bayesian BL, MVO, RP, HRP), which are
+   backtested with transaction costs and slippage across holding periods and cost
+   scenarios.
+
+## Setup
+
+1. Install [`uv`](https://docs.astral.sh/uv/) and Python 3.10.
+2. Install dependencies: `uv sync` (add a hardware extra if training the model,
+   e.g. `uv sync --extra cpu`, `--extra mps`, or a `cu11x`/`cu12x`/`cu13x` variant).
+3. Copy `.env.example` to `.env` and fill in the required values (Azure OpenAI
+   key for the news scorer; everything else has a working default).
+4. Pull tracked data and benchmark artifacts with DVC: `uv run dvc pull`.
+
+Full walkthrough: [`docs/setup.md`](docs/setup.md).
+
+## Test
+
+There is no application test suite yet (`pytest` is wired in as a dev
+dependency for when one is added). In the meantime, verify the pipelines with:
+
+- Static checks: `uv run ruff check .`
+- News pipeline audits: `uv run tyche audit-a`, `audit-c` (bounded `--limit` runs)
+- A bounded news-pipeline smoke run: `uv run tyche run --limit 50`
+- A single-holding portfolio smoke run: `uv run python -m tyche.portfolio.run --holding 5`
+
+Full walkthrough: [`docs/testing.md`](docs/testing.md).
+
+## Documentation
+
+| Section | Description |
+| --- | --- |
+| [Setup](docs/setup.md) | Environment, dependencies, `.env`, DVC-tracked data |
+| [Testing](docs/testing.md) | Linting, audits, and smoke-run procedures |
+| [News Sentiment Pipeline](docs/news-pipeline.md) | The agent DAG that turns raw news into a sentiment contract |
+| [Data & Features](docs/data-features.md) | Universe, calendar, feature branches, windowing/splits |
+| [Predictive Model](docs/model.md) | The multimodal return-distribution network, training, and inference |
+| [Portfolio Management](docs/portfolio-management.md) | Allocation strategies, transaction costs, and the backtest engine |
+| [Evaluation & Reporting](docs/evaluation-reporting.md) | Model/portfolio metrics and LaTeX report generation |
+| [Configuration Reference](docs/configuration.md) | Every config surface, grouped by domain |
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
