@@ -13,6 +13,8 @@ on. Days with no news are zeros — never forward-filled.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from sklearn.cluster import AgglomerativeClustering
@@ -78,22 +80,63 @@ def _representative_indices(
     return [*keep_rows, *[embed_rows[i] for i in reps]]
 
 
-def _embedding_lookup(df: pd.DataFrame) -> dict[str, np.ndarray]:
+def _load_embedding_cache(path: Path) -> dict[str, np.ndarray]:
+    if not path.exists():
+        return {}
+    try:
+        cache = np.load(path, allow_pickle=True)
+        texts = [str(t) for t in cache["texts"].tolist()]
+        embeddings = cache["embeddings"].astype(np.float32)
+    except Exception as exc:
+        log.warning("could not load news embedding cache %s: %s", path, exc)
+        return {}
+    if len(texts) != len(embeddings):
+        log.warning(
+            "ignoring invalid news embedding cache %s: %d texts for %d embeddings",
+            path,
+            len(texts),
+            len(embeddings),
+        )
+        return {}
+    return {text: embeddings[i] for i, text in enumerate(texts)}
+
+
+def _save_embedding_cache(path: Path, cache: dict[str, np.ndarray]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    texts = list(cache)
+    embeddings = np.vstack([cache[text] for text in texts]).astype(np.float32)
+    np.savez_compressed(
+        path,
+        texts=np.asarray(texts, dtype=object),
+        embeddings=embeddings,
+    )
+
+
+def _embedding_lookup(df: pd.DataFrame, cfg: Config) -> dict[str, np.ndarray]:
     text = df["summary_text"].fillna("").astype(str).str.strip()
     unique_texts = list(dict.fromkeys(t for t in text if t))
     if not unique_texts:
         return {}
 
+    cache_path = cfg.paths.news_embedding_cache
+    cache = _load_embedding_cache(Path(cache_path))
+    missing = [text for text in unique_texts if text not in cache]
     log.info(
-        "portfolio news feature extraction embedding %d unique summaries from "
-        "%d article rows",
+        "portfolio news feature extraction found %d unique summaries from %d "
+        "article rows | cached=%d missing=%d",
         len(unique_texts),
         len(df),
+        len(unique_texts) - len(missing),
+        len(missing),
     )
-    embeddings = embed_texts(unique_texts)
-    return {
-        text: embeddings[i].astype(np.float32) for i, text in enumerate(unique_texts)
-    }
+    if missing:
+        log.info("embedding %d missing portfolio news summaries", len(missing))
+        embeddings = embed_texts(missing)
+        for i, text in enumerate(missing):
+            cache[text] = embeddings[i].astype(np.float32)
+        _save_embedding_cache(Path(cache_path), cache)
+        log.info("saved news embedding cache to %s", cache_path)
+    return {text: cache[text] for text in unique_texts if text in cache}
 
 
 def _representative_window_features(
@@ -122,7 +165,7 @@ def _aggregate_selection_windows(
     if not cfg.news.dedup_enabled:
         return _aggregate(df)
 
-    embedding_by_text = _embedding_lookup(df)
+    embedding_by_text = _embedding_lookup(df, cfg)
     lookback = pd.Timedelta(days=int(cfg.news.dedup_lookback_days))
     rows: list[dict] = []
     total_representatives = 0

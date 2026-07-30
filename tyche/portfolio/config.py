@@ -20,6 +20,9 @@ class Paths:
     daily_ohlcv: Path = REPO_ROOT / "data/eodhd/daily_ohclv.parquet"
     intraday_ohlcv: Path = REPO_ROOT / "data/eodhd/intraday_ohclv.parquet"
     artifacts: Path = REPO_ROOT / "tyche/portfolio/artifacts"
+    news_embedding_cache: Path = (
+        REPO_ROOT / "tyche/portfolio/artifacts/news_embedding_cache.npz"
+    )
 
 
 @dataclass(frozen=True)
