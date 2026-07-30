@@ -75,6 +75,9 @@ class NewsFeatureConfig:
     dedup_enabled: bool = True
     dedup_lookback_days: int = 30
     dedup_similarity_threshold: float = 0.90
+    # ``auto`` selects CUDA, then MPS, then CPU. This accelerates cosine graph creation.
+    dedup_device: str = "auto"  # auto | cpu | cuda | cuda:N | mps
+    dedup_similarity_batch_size: int = 1_024
 
 
 @dataclass(frozen=True)

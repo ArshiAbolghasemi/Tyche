@@ -1,11 +1,14 @@
-"""News feature branch — centroid-representative story sentiment.
+"""News feature branch — exact-window, centroid-representative story sentiment.
 
 For each ``(stock, trading-day)`` this looks back over a configurable one-month
-selection window, clusters near-duplicate article summaries with local text embeddings,
-and treats each cluster as one news story. Each cluster is represented by the article
-closest to the cluster centroid. Daily features then use only those representative
-article scores: the mean representative sentiment and the log number of unique story
-clusters in the trailing selection window.
+selection window, builds a cosine-similarity graph over local text embeddings, and
+treats every connected component as one news story. Each component is represented by
+the article closest to its centroid. The cosine graph is evaluated on CUDA or MPS when
+available, while the selection window itself is never partitioned: boundary articles
+cannot be omitted because a cluster was fitted on an incomplete time bucket. Daily
+features then use only those representative article scores: the mean representative
+sentiment and the log number of unique story components in the trailing selection
+window.
 
 Every feature is built from articles published at or before the trading day it lands
 on. Days with no news are zeros — never forward-filled.
@@ -17,9 +20,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.cluster import AgglomerativeClustering
+import torch
 from tqdm import tqdm
 
+from tyche.common.device import resolve_device
 from tyche.common.logging import get_logger
 from tyche.news.service.embedder import embed_texts
 from tyche.portfolio.config import Config
@@ -37,17 +41,72 @@ def _unit(x: np.ndarray) -> np.ndarray:
     return x / norm if norm > 0 else x
 
 
-def _cluster_labels(embeddings: np.ndarray, similarity_threshold: float) -> np.ndarray:
-    if len(embeddings) == 1:
-        return np.zeros(1, dtype=int)
-    distance_threshold = 1.0 - float(similarity_threshold)
-    clustering = AgglomerativeClustering(
-        n_clusters=None,
-        metric="cosine",
-        linkage="average",
-        distance_threshold=distance_threshold,
+class _DisjointSet:
+    """Small union-find used after GPU cosine-neighbor discovery."""
+
+    def __init__(self, size: int) -> None:
+        self.parent = list(range(size))
+        self.rank = [0] * size
+
+    def find(self, item: int) -> int:
+        while self.parent[item] != item:
+            self.parent[item] = self.parent[self.parent[item]]
+            item = self.parent[item]
+        return item
+
+    def union(self, left: int, right: int) -> None:
+        left_root = self.find(left)
+        right_root = self.find(right)
+        if left_root == right_root:
+            return
+        if self.rank[left_root] < self.rank[right_root]:
+            left_root, right_root = right_root, left_root
+        self.parent[right_root] = left_root
+        if self.rank[left_root] == self.rank[right_root]:
+            self.rank[left_root] += 1
+
+
+def _cluster_labels(
+    embeddings: np.ndarray,
+    similarity_threshold: float,
+    device: torch.device,
+    batch_size: int,
+) -> np.ndarray:
+    """Cluster one complete selection window from its cosine-neighbor graph.
+
+    This is single-linkage clustering at ``similarity_threshold``. Unlike fitting
+    independent calendar buckets, every article currently in the trailing window is
+    considered together. GPU work is limited to dense, batched cosine products.
+    """
+    size = len(embeddings)
+    if size <= 1:
+        return np.zeros(size, dtype=int)
+
+    vectors = torch.as_tensor(embeddings, dtype=torch.float32, device=device)
+    vectors = torch.nn.functional.normalize(vectors, p=2, dim=1)
+    sets = _DisjointSet(size)
+    batch_size = max(1, int(batch_size))
+    threshold = float(similarity_threshold)
+
+    with torch.inference_mode():
+        for start in range(0, size, batch_size):
+            stop = min(start + batch_size, size)
+            similarities = vectors[start:stop] @ vectors.T
+            # Retain one orientation of every edge and remove self-links.
+            row_ids, col_ids = torch.where(similarities >= threshold)
+            row_ids = row_ids + start
+            keep = row_ids < col_ids
+            if not bool(keep.any()):
+                continue
+            pairs = torch.stack((row_ids[keep], col_ids[keep]), dim=1).cpu().numpy()
+            for left, right in pairs:
+                sets.union(int(left), int(right))
+
+    roots = [sets.find(i) for i in range(size)]
+    label_map: dict[int, int] = {}
+    return np.asarray(
+        [label_map.setdefault(root, len(label_map)) for root in roots], dtype=int
     )
-    return clustering.fit_predict(embeddings)
 
 
 def _centroid_representatives(embeddings: np.ndarray, labels: np.ndarray) -> list[int]:
@@ -65,6 +124,8 @@ def _representative_indices(
     group: pd.DataFrame,
     embedding_by_text: dict[str, np.ndarray],
     similarity_threshold: float,
+    device: torch.device,
+    batch_size: int,
 ) -> list[int]:
     summary = group["summary_text"].fillna("").astype(str).str.strip()
     embed_rows = [idx for idx, text in summary.items() if text in embedding_by_text]
@@ -75,7 +136,7 @@ def _representative_indices(
     embeddings = np.vstack(
         [embedding_by_text[str(summary.loc[idx])] for idx in embed_rows]
     )
-    labels = _cluster_labels(embeddings, similarity_threshold)
+    labels = _cluster_labels(embeddings, similarity_threshold, device, batch_size)
     reps = _centroid_representatives(embeddings, labels)
     return [*keep_rows, *[embed_rows[i] for i in reps]]
 
@@ -143,11 +204,14 @@ def _representative_window_features(
     window: pd.DataFrame,
     embedding_by_text: dict[str, np.ndarray],
     cfg: Config,
+    device: torch.device,
 ) -> tuple[float, int]:
     keep = _representative_indices(
         window,
         embedding_by_text,
         cfg.news.dedup_similarity_threshold,
+        device,
+        cfg.news.dedup_similarity_batch_size,
     )
     scores = window.loc[keep, "sentiment_final"].astype(float)
     return float(scores.mean()), int(len(scores))
@@ -167,6 +231,13 @@ def _aggregate_selection_windows(
 
     embedding_by_text = _embedding_lookup(df, cfg)
     lookback = pd.Timedelta(days=int(cfg.news.dedup_lookback_days))
+    device = resolve_device(cfg.news.dedup_device)
+    log.info(
+        "clustering complete rolling news windows on device=%s "
+        "(similarity batch size=%d)",
+        device,
+        cfg.news.dedup_similarity_batch_size,
+    )
     rows: list[dict] = []
     total_representatives = 0
     grouped = list(df.groupby("asset", sort=True))
@@ -192,6 +263,7 @@ def _aggregate_selection_windows(
                     window,
                     embedding_by_text,
                     cfg,
+                    device,
                 )
                 total_representatives += n_articles
                 rows.append(
