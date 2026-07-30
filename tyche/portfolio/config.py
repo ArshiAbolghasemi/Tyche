@@ -19,10 +19,10 @@ class Paths:
     news_sentiment: Path = REPO_ROOT / "data/output/news_sentiment.parquet"
     daily_ohlcv: Path = REPO_ROOT / "data/eodhd/daily_ohclv.parquet"
     intraday_ohlcv: Path = REPO_ROOT / "data/eodhd/intraday_ohclv.parquet"
-    artifacts: Path = REPO_ROOT / "tyche/portfolio/artifacts"
-    news_embedding_cache: Path = (
-        REPO_ROOT / "tyche/portfolio/artifacts/news_embedding_cache.npz"
-    )
+    # Portfolio-run and model-training artifacts; ``Config.artifacts_dir`` appends the
+    # target-distribution subdirectory (benchmark/student_t, benchmark/gaussian, ...).
+    artifacts: Path = REPO_ROOT / "benchmark"
+    news_embedding_cache: Path = REPO_ROOT / ".cache/news_embedding_cache.npz"
 
 
 @dataclass(frozen=True)
@@ -148,6 +148,12 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     portfolio: PortfolioConfig = field(default_factory=PortfolioConfig)
+
+    @property
+    def artifacts_dir(self) -> Path:
+        """Benchmark output directory for this run, split per target distribution
+        (e.g. ``benchmark/student_t``, ``benchmark/gaussian``)."""
+        return self.paths.artifacts / self.train.target_distribution
 
 
 def default_config() -> Config:

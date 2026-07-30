@@ -99,7 +99,7 @@ def prepare(cfg: Config) -> PreparedExperiment:
         cfg.train.target_distribution,
     )
 
-    cfg.paths.artifacts.mkdir(parents=True, exist_ok=True)
+    cfg.artifacts_dir.mkdir(parents=True, exist_ok=True)
     train_result = train_model(
         data,
         splits.train,
@@ -115,7 +115,7 @@ def prepare(cfg: Config) -> PreparedExperiment:
         mc_dropout_samples=cfg.train.mc_dropout_samples,
         device=cfg.train.device,
     )
-    pred_path = cfg.paths.artifacts / f"predictions_H{cfg.window.holding}.npz"
+    pred_path = cfg.artifacts_dir / f"predictions_H{cfg.window.holding}.npz"
     predictions.save(pred_path)
 
     model_metrics = evaluate_model(
@@ -124,7 +124,7 @@ def prepare(cfg: Config) -> PreparedExperiment:
         cfg.train.student_t_df,
     )
     pd.DataFrame([model_metrics]).to_csv(
-        cfg.paths.artifacts / f"model_metrics_H{cfg.window.holding}.csv",
+        cfg.artifacts_dir / f"model_metrics_H{cfg.window.holding}.csv",
         index=False,
     )
     _log_table("Predictive model metrics", pd.DataFrame([model_metrics]))
@@ -235,7 +235,7 @@ def run_grid(
     transaction_cost_bps: tuple[float, ...] | None = None,
 ) -> pd.DataFrame:
     """Run the requested holding/cost grid and write portfolio artifacts."""
-    cfg.paths.artifacts.mkdir(parents=True, exist_ok=True)
+    cfg.artifacts_dir.mkdir(parents=True, exist_ok=True)
     frames: list[pd.DataFrame] = []
     failed: dict[tuple[float, int], str] = {}
     costs = transaction_cost_bps or (cfg.portfolio.transaction_cost_bps,)
@@ -273,9 +273,9 @@ def run_grid(
                 if multi_cost
                 else f"_H{holding}"
             )
-            portfolio.to_csv(cfg.paths.artifacts / f"portfolio_metrics{suffix}.csv")
+            portfolio.to_csv(cfg.artifacts_dir / f"portfolio_metrics{suffix}.csv")
             pd.DataFrame(results["curves"]).to_csv(
-                cfg.paths.artifacts / f"equity_curves{suffix}.csv"
+                cfg.artifacts_dir / f"equity_curves{suffix}.csv"
             )
 
     if not frames:
@@ -285,7 +285,7 @@ def run_grid(
     combined_name = (
         "cost_portfolio_metrics.csv" if multi_cost else "portfolio_metrics.csv"
     )
-    combined.to_csv(cfg.paths.artifacts / combined_name)
+    combined.to_csv(cfg.artifacts_dir / combined_name)
     if failed:
         log.warning("failed runs: %s", sorted(failed))
     return combined
@@ -354,7 +354,7 @@ def main() -> None:
     combined = run_grid(cfg, holdings, args.transaction_cost_bps)
     for metric in ("cum_return_net", "sharpe", "max_drawdown", "avg_turnover"):
         _print_pivot(combined, metric)
-    log.info("artifacts written to %s", cfg.paths.artifacts)
+    log.info("artifacts written to %s", cfg.artifacts_dir)
 
 
 if __name__ == "__main__":
