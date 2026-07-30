@@ -112,6 +112,8 @@ def prepare(cfg: Config) -> PreparedExperiment:
         data,
         oos,
         batch_size=cfg.train.batch_size,
+        mc_dropout_samples=cfg.train.mc_dropout_samples,
+        device=cfg.train.device,
     )
     pred_path = cfg.paths.artifacts / f"predictions_H{cfg.window.holding}.npz"
     predictions.save(pred_path)

@@ -1,8 +1,8 @@
 """Training objective: distributional NLL + Huber + covariance regularizer.
 
 The NLL can be multivariate Gaussian or multivariate Student-t. It is computed through
-the predicted Cholesky factor (never an explicit inverse or determinant): given
-Sigma = L L^T, the quadratic form uses a triangular solve and log|Sigma| =
+the predicted aleatoric Cholesky factor (never an explicit inverse or determinant):
+given Sigma_A = L L^T, the quadratic form uses a triangular solve and log|Sigma_A| =
 2 * sum(log diag(L)). The Huber term stabilizes the mean early in training; the
 covariance regularizer discourages exploding variances.
 """
@@ -45,7 +45,7 @@ def student_t_nll(
 ) -> torch.Tensor:
     """Mean multivariate Student-t NLL over the batch.
 
-    ``pred.cov`` is interpreted as the covariance matrix. For Student-t with
+    ``pred.aleatoric_cov`` is interpreted as the covariance matrix. For Student-t with
     ``nu > 2``, covariance is ``nu / (nu - 2) * scale``; therefore the likelihood uses
     ``scale = cov * (nu - 2) / nu`` so the model's covariance head keeps the same
     meaning under both supported target distributions.
@@ -92,7 +92,7 @@ def huber(pred: Prediction, target: torch.Tensor, delta: float = 1.0) -> torch.T
 
 def covariance_regularizer(pred: Prediction) -> torch.Tensor:
     """Penalize large predicted variances (trace) to keep the covariance stable."""
-    var = torch.diagonal(pred.cov, dim1=-2, dim2=-1)  # [B, N]
+    var = torch.diagonal(pred.aleatoric_cov, dim1=-2, dim2=-1)  # [B, N]
     return var.mean()
 
 

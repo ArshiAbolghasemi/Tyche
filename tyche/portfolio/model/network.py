@@ -3,8 +3,9 @@
 Per asset, the three branch encoders produce a per-day embedding sequence; these are
 concatenated into one multimodal vector per lookback day and run through a one-layer
 LSTM (or a light self-attention encoder). The final asset embeddings feed two heads:
-a mean head predicting mu in R^N, and a covariance head predicting a valid
-Sigma = L L^T + diag(d) via a low-rank-plus-diagonal parameterization.
+a mean head predicting mu in R^N, and an aleatoric-covariance head predicting a valid
+Sigma_A = L L^T + diag(d) via a low-rank-plus-diagonal parameterization. At inference,
+MC dropout turns repeated mean-head outputs into epistemic covariance Sigma_E.
 
 The ``use_news`` / ``use_intraday`` flags drop a branch for ablations without changing
 any other wiring.
@@ -25,8 +26,13 @@ from tyche.portfolio.model.encoders import IntradayDayEncoder, SequenceConvEncod
 @dataclass
 class Prediction:
     mu: torch.Tensor  # [B, N]
-    scale_tril: torch.Tensor  # [B, N, N] lower-Cholesky factor of Sigma
-    cov: torch.Tensor  # [B, N, N] Sigma = L L^T + diag(d)
+    scale_tril: torch.Tensor  # [B, N, N] lower-Cholesky factor of Sigma_A
+    aleatoric_cov: torch.Tensor  # [B, N, N] Sigma_A = L L^T + diag(d)
+
+    @property
+    def cov(self) -> torch.Tensor:
+        """Backward-compatible name for the training-time aleatoric covariance."""
+        return self.aleatoric_cov
 
 
 class MultimodalReturnModel(nn.Module):
@@ -73,6 +79,9 @@ class MultimodalReturnModel(nn.Module):
             self.sequence = nn.LSTM(fused, h, batch_first=True)
             self.project = nn.Identity()
 
+        # This dropout is deliberately placed immediately before both prediction heads.
+        # It is left active only during MC-dropout inference to sample model uncertainty.
+        self.head_dropout = nn.Dropout(do)
         self.mu_head = nn.Sequential(nn.Linear(h, h), nn.GELU(), nn.Linear(h, 1))
         self.factor_head = nn.Linear(h, cfg.cov_rank)
         self.diag_head = nn.Linear(h, 1)
@@ -99,12 +108,13 @@ class MultimodalReturnModel(nn.Module):
         emb = self._asset_embeddings(daily, news, intraday)  # [B, N, H]
         b, n = emb.shape[0], emb.shape[1]
 
-        mu = self.mu_head(emb).squeeze(-1)  # [B, N]
-        factor = self.factor_head(emb)  # [B, N, rank]
-        diag = F.softplus(self.diag_head(emb).squeeze(-1)) + self.cov_eps  # [B, N]
+        stochastic_emb = self.head_dropout(emb)
+        mu = self.mu_head(stochastic_emb).squeeze(-1)  # [B, N]
+        factor = self.factor_head(stochastic_emb)  # [B, N, rank]
+        diag = F.softplus(self.diag_head(stochastic_emb).squeeze(-1)) + self.cov_eps
 
         cov = factor @ factor.transpose(-1, -2)  # [B, N, N] low-rank
         cov = cov + torch.diag_embed(diag)
         jitter = self.cov_eps * torch.eye(n, device=emb.device).expand(b, n, n)
         scale_tril = torch.linalg.cholesky(cov + jitter)
-        return Prediction(mu=mu, scale_tril=scale_tril, cov=cov)
+        return Prediction(mu=mu, scale_tril=scale_tril, aleatoric_cov=cov)

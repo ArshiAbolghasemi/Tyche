@@ -12,7 +12,7 @@ objects the allocator actually consumes:
   rank IC are cross-sectional. A model whose ``mu`` collapses to the same value for
   every asset can still post a falling NLL while carrying no allocation signal at all,
   and that failure is invisible in the loss.
-* **covariance** — mean predicted variance, mean off-diagonal correlation, and the
+* **aleatoric covariance** — mean predicted variance, mean off-diagonal correlation, and the
   spread between the largest and smallest variance. Together these catch the covariance
   head drifting toward a degenerate solution, which shows up downstream as unstable
   ``Sigma^-1 mu`` in the direct-BL allocation.
@@ -72,8 +72,8 @@ def _move(batch: dict, device: torch.device) -> dict:
 
 @torch.no_grad()
 def moment_stats(pred: Prediction) -> dict[str, float]:
-    """Diagnostics of the predicted mean and covariance for one batch."""
-    mu, cov = pred.mu, pred.cov
+    """Diagnostics of the predicted mean and aleatoric covariance for one batch."""
+    mu, cov = pred.mu, pred.aleatoric_cov
     n = mu.shape[-1]
     var = torch.diagonal(cov, dim1=-2, dim2=-1)
     sd = var.clamp_min(1e-12).sqrt()
