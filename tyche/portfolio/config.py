@@ -97,7 +97,7 @@ class TrainConfig:
     batch_size: int = 32
     lr: float = 1e-3
     weight_decay: float = 1e-5
-    target_distribution: str = "gaussian"  # gaussian | student_t
+    target_distribution: str = "student_t"  # gaussian | student_t
     student_t_df: float = 5.0  # degrees of freedom; must be > 2 for finite covariance
     # Stochastic forward passes at prediction time. Dropout stays enabled only for
     # these passes, yielding epistemic covariance from mean-prediction disagreement.
