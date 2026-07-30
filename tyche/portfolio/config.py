@@ -102,8 +102,6 @@ class TrainConfig:
     # Stochastic forward passes at prediction time. Dropout stays enabled only for
     # these passes, yielding epistemic covariance from mean-prediction disagreement.
     mc_dropout_samples: int = 50
-    huber_lambda: float = 1.0  # lambda_1
-    cov_reg_lambda: float = 1e-3  # lambda_2
     grad_clip: float = 1.0
     patience: int = 8  # early-stopping on val NLL
     seed: int = 7

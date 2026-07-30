@@ -67,14 +67,14 @@ A distributional negative log-likelihood — multivariate Gaussian or
 multivariate Student-t, selected by `TrainConfig.target_distribution` — computed
 through the predicted Cholesky factor directly (a triangular solve for the
 quadratic form, `log|Sigma_A| = 2 Σ log diag(L)`), never an explicit matrix
-inverse or determinant. A Huber term on the mean stabilizes early training,
-and a covariance regularizer discourages exploding variances.
+inverse or determinant. This NLL is the complete training objective; no auxiliary
+penalty terms are applied.
 
 ## Training procedure (`tyche/portfolio/model/train.py`)
 
 Training optimizes the return-distribution likelihood only — no portfolio
 objective enters here. The checkpoint with the lowest validation NLL is kept.
-Each epoch logs the loss decomposition plus two diagnostics of what the
+Each epoch logs NLL plus two diagnostics of what the
 allocator actually consumes:
 
 - **mean dispersion** — the model can post a falling NLL while `mu` collapses

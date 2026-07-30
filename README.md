@@ -9,7 +9,10 @@ data into backtested portfolio allocations.
    contract.
 2. **Portfolio construction** — a multimodal deep-learning model fuses daily
    OHLCV, intraday OHLCV, and news-sentiment features into a predicted
-   return distribution (mean + covariance) per rebalance date. Those forecasts
+   uncertainty-aware return distribution (mean plus aleatoric and epistemic covariance)
+   per rebalance date. Gaussian and Student-$t$ models train solely with their
+   distributional negative log-likelihood; MC dropout estimates model uncertainty at
+   inference. Those forecasts
    drive six allocation strategies (EW, BL, Bayesian BL, MVO, RP, HRP), which are
    backtested with transaction costs and slippage across holding periods and cost
    scenarios.

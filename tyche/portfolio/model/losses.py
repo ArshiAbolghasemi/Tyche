@@ -1,17 +1,14 @@
-"""Training objective: distributional NLL + Huber + covariance regularizer.
+"""Distributional training objective for Gaussian and Student-t targets.
 
 The NLL can be multivariate Gaussian or multivariate Student-t. It is computed through
 the predicted aleatoric Cholesky factor (never an explicit inverse or determinant):
 given Sigma_A = L L^T, the quadratic form uses a triangular solve and log|Sigma_A| =
-2 * sum(log diag(L)). The Huber term stabilizes the mean early in training; the
-covariance regularizer discourages exploding variances.
+2 * sum(log diag(L)).
 """
 
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
-
 from tyche.portfolio.model.network import Prediction
 
 _LOG_2PI = 1.8378770664093453
@@ -84,29 +81,3 @@ def distribution_nll(
         case "student_t":
             return student_t_nll(pred, target, student_t_df)
     raise AssertionError("unreachable distribution branch")
-
-
-def huber(pred: Prediction, target: torch.Tensor, delta: float = 1.0) -> torch.Tensor:
-    return F.huber_loss(pred.mu, target, delta=delta)
-
-
-def covariance_regularizer(pred: Prediction) -> torch.Tensor:
-    """Penalize large predicted variances (trace) to keep the covariance stable."""
-    var = torch.diagonal(pred.aleatoric_cov, dim1=-2, dim2=-1)  # [B, N]
-    return var.mean()
-
-
-def total_loss(
-    pred: Prediction,
-    target: torch.Tensor,
-    huber_lambda: float,
-    cov_reg_lambda: float,
-    target_distribution: str = "gaussian",
-    student_t_df: float = 5.0,
-) -> tuple[torch.Tensor, dict[str, float]]:
-    nll = distribution_nll(pred, target, target_distribution, student_t_df)
-    hub = huber(pred, target)
-    reg = covariance_regularizer(pred)
-    loss = nll + huber_lambda * hub + cov_reg_lambda * reg
-    parts = {"nll": nll.item(), "huber": hub.item(), "cov_reg": reg.item()}
-    return loss, parts

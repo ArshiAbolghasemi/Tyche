@@ -4,7 +4,7 @@ Pure model training — no portfolio objective ever enters here (per the spec, t
 network optimizes only the return-distribution likelihood). Returns the best model
 (lowest validation NLL) plus the per-epoch history.
 
-Each epoch logs the loss decomposition alongside diagnostics of the two predicted
+Each epoch logs the NLL alongside diagnostics of the two predicted
 objects the allocator actually consumes:
 
 * **mean** — its level, and its *cross-sectional dispersion*. Dispersion is the one
@@ -30,7 +30,7 @@ from tyche.common.logging import get_logger
 from tyche.portfolio.data.assemble import AlignedData
 from tyche.portfolio.config import Config
 from tyche.portfolio.model.dataset import WindowDataset
-from tyche.portfolio.model.losses import distribution_nll, total_loss
+from tyche.portfolio.model.losses import distribution_nll
 from tyche.portfolio.model.network import MultimodalReturnModel, Prediction
 from tyche.portfolio.data.windows import Sample
 
@@ -123,14 +123,12 @@ def _evaluate(model, loader, device, cfg: Config) -> tuple[float, dict[str, floa
 
 def _log_epoch(tag: str, epoch: int, record: dict) -> None:
     log.info(
-        "[%s] epoch %02d | val_nll %+.4f | train nll %+.4f huber %.4f cov_reg %.4f | "
+        "[%s] epoch %02d | val_nll %+.4f | train nll %+.4f | "
         "mu mean %+.5f disp %.5f | cov var %.5f corr %+.3f spread %.1f",
         tag,
         epoch,
         record["val_nll"],
         record["nll"],
-        record["huber"],
-        record["cov_reg"],
         record["mu_mean"],
         record["mu_dispersion"],
         record["cov_var"],
@@ -186,18 +184,16 @@ def train_model(
             batch = _move(batch, device)
             opt.zero_grad()
             pred = model(batch["daily"], batch["news"], batch["intraday"])
-            loss, parts = total_loss(
+            loss = distribution_nll(
                 pred,
                 batch["target"],
-                cfg.train.huber_lambda,
-                cfg.train.cov_reg_lambda,
                 cfg.train.target_distribution,
                 cfg.train.student_t_df,
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip)
             opt.step()
-            _accumulate(running, parts)
+            _accumulate(running, {"nll": loss.item()})
             _accumulate(running, moment_stats(pred))
 
         n_batches = max(len(train_loader), 1)
