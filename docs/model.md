@@ -7,6 +7,33 @@ from the three aligned feature branches described in
 
 ## Architecture (`tyche/portfolio/model/network.py`)
 
+```mermaid
+flowchart TB
+    subgraph branches["Per-day branch encoders (per asset)"]
+        daily["Daily OHLCV<br/>SequenceConvEncoder"]
+        intraday["Intraday OHLCV<br/>IntradayDayEncoder"]
+        news["News sentiment<br/>SequenceConvEncoder"]
+    end
+
+    daily --> concat["Concat → one multimodal<br/>vector per lookback day"]
+    intraday --> concat
+    news --> concat
+
+    concat --> seq["Sequence encoder<br/>LSTM or attention"]
+    seq --> emb["Per-asset embedding"]
+
+    emb --> meanhead["Mean head"]
+    emb --> covhead["Aleatoric covariance head"]
+
+    meanhead --> mu["mu"]
+    covhead --> sigmaA["Sigma_A = L L^T + diag(d)"]
+
+    meanhead -. "MC dropout, repeated<br/>stochastic passes" .-> sigmaE["Sigma_E (epistemic)"]
+
+    sigmaA --> total["Total covariance<br/>Sigma_A + Sigma_E"]
+    sigmaE --> total
+```
+
 Per asset, three branch encoders (`tyche/portfolio/model/encoders.py`) each
 produce a per-day embedding sequence:
 

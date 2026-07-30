@@ -4,8 +4,15 @@ An agentic pipeline, wired as a LangGraph `StateGraph`, that turns a raw news
 feed into a clean, bias-neutralized financial-sentiment contract — one row per
 `(article, ticker)`.
 
-```
-ingest → [summarizer] → scorer → neutralizer → auditor → END
+```mermaid
+flowchart LR
+    ingest["Ingest<br/>raw file → (article, ticker) rows"] --> cond{"summary_text already<br/>present for every row?"}
+    cond -->|no| summarizer["Summarizer<br/>bart-large-cnn"]
+    cond -->|yes| scorer["Scorer<br/>Azure OpenAI"]
+    summarizer --> scorer
+    scorer --> neutralizer["Neutralizer<br/>entity prior → rolling demean → z-score"]
+    neutralizer --> auditor["Auditor<br/>score-distribution check"]
+    auditor --> done(["END"])
 ```
 
 The summarizer node is conditional: if every ingested row already carries a

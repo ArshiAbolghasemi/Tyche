@@ -25,29 +25,15 @@ data into backtested portfolio allocations.
 
 Full walkthrough: [`docs/setup.md`](docs/setup.md).
 
-## Test
-
-There is no application test suite yet (`pytest` is wired in as a dev
-dependency for when one is added). In the meantime, verify the pipelines with:
-
-- Static checks: `uv run ruff check .`
-- News pipeline audits: `uv run tyche audit-a`, `audit-c` (bounded `--limit` runs)
-- A bounded news-pipeline smoke run: `uv run tyche run --limit 50`
-- A single-holding portfolio smoke run: `uv run python -m tyche.portfolio.run --holding 5`
-
-Full walkthrough: [`docs/testing.md`](docs/testing.md).
-
 ## Documentation
 
 | Section | Description |
 | --- | --- |
 | [Setup](docs/setup.md) | Environment, dependencies, `.env`, DVC-tracked data |
-| [Testing](docs/testing.md) | Linting, audits, and smoke-run procedures |
 | [News Sentiment Pipeline](docs/news-pipeline.md) | The agent DAG that turns raw news into a sentiment contract |
 | [Data & Features](docs/data-features.md) | Universe, calendar, feature branches, windowing/splits |
 | [Predictive Model](docs/model.md) | The multimodal return-distribution network, training, and inference |
 | [Portfolio Management](docs/portfolio-management.md) | Allocation strategies, transaction costs, and the backtest engine |
-| [Evaluation & Reporting](docs/evaluation-reporting.md) | Model/portfolio metrics and LaTeX report generation |
 | [Configuration Reference](docs/configuration.md) | Every config surface, grouped by domain |
 
 ## License
