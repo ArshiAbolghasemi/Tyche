@@ -1,233 +1,122 @@
 """Agent 5 — Scorer. Article summary → financial sentiment probabilities.
 
-This is the only agent that calls the sentiment model. Sentiment is extracted by an
-**Azure OpenAI** chat model (``gpt-4o-mini``) reached through **LangChain**
-(``AzureChatOpenAI``), not FinBERT. The model is given a comprehensive
-financial-sentiment system prompt and asked to return calibrated
-positive/negative/neutral probabilities for the described security, which are:
+Orchestration only — every model-specific detail (prompts, HF loading, parsing,
+retries) lives in ``tyche.news.service.sentiment``. For every backend configured in
+``settings.sentiment_backends.active`` (``TYCHE_SENTIMENT_BACKENDS``, default
+``["gpt4o_mini"]``) this module asks the service to score the unique summary texts,
+then writes the results into ``<backend>_``-prefixed columns
+(``<backend>_agg_p_pos/neg/neu``, ``<backend>_raw_score``, ...) so multiple backends
+can run side by side and be compared row for row.
 
-* validated against a **pydantic** schema (``SentimentScores`` — non-negative,
-  renormalized to sum to 1), and
-* retried on transient failures with **tenacity** (exponential backoff).
+The FIRST configured backend is also the *primary* one: its output additionally
+populates the canonical unprefixed columns (``agg_p_pos``, ``raw_score``, ...) that
+the Neutralizer, Audit A/B/D, and the output contract consume — so the default,
+single-backend ``gpt4o_mini`` setup (the original Azure OpenAI API-call process)
+behaves exactly as before this existed.
 
-Calls are cached by *exact* summary text, so byte-identical reprints cost a single API
-call and every row carrying that text shares the result. Near-duplicates with distinct
-wording are scored separately; there is no embedding-based deduplication stage.
-
-Outputs mirror the old FinBERT contract — ``agg_p_pos/agg_p_neg/agg_p_neu`` and
-``raw_score = p_pos - p_neg`` in ``[-1, 1]`` — so the Neutralizer and output schema are
-unchanged.
+Calls are cached by *exact* summary text per backend, so byte-identical reprints cost
+one model call and every row carrying that text shares the result. Near-duplicates
+with distinct wording are scored separately; there is no embedding-based
+deduplication stage.
 """
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
-
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, Field, field_validator, model_validator
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
-from tqdm import tqdm
 
 from tyche.news.config import settings
 from tyche.common.logging import get_logger
-from tyche.news.records import Aggregate, Score, Summary
+from tyche.news.records import Aggregate, Score, Summary, backend_score_columns
+from tyche.news.service import sentiment as sentiment_service
 
 log = get_logger(__name__)
 
 
-# --- Response schema (pydantic) ----------------------------------------------
-class SentimentScores(BaseModel):
-    """Validated LLM sentiment response.
-
-    Probabilities are coerced to be non-negative and renormalized to sum to 1, so a
-    model that returns slightly off-sum values (or a lone class) still yields a proper
-    distribution. ``rationale`` is a short human-readable justification for auditing.
-    """
-
-    p_positive: float = Field(
-        description="Probability the news is POSITIVE for the security's investors.",
-        ge=0.0,
-        le=1.0,
-    )
-    p_negative: float = Field(
-        description="Probability the news is NEGATIVE for the security's investors.",
-        ge=0.0,
-        le=1.0,
-    )
-    p_neutral: float = Field(
-        description="Probability the news is NEUTRAL / has no clear directional impact.",
-        ge=0.0,
-        le=1.0,
-    )
-    rationale: str = Field(
-        default="",
-        description="One concise sentence justifying the sentiment assessment.",
-    )
-
-    @field_validator("p_positive", "p_negative", "p_neutral")
-    @classmethod
-    def _clip_non_negative(cls, v: float) -> float:
-        return max(0.0, float(v))
-
-    @model_validator(mode="after")
-    def _renormalize(self) -> "SentimentScores":
-        total = self.p_positive + self.p_negative + self.p_neutral
-        if total <= 0:
-            # Degenerate response — fall back to fully neutral.
-            self.p_positive, self.p_negative, self.p_neutral = 0.0, 0.0, 1.0
-        else:
-            self.p_positive /= total
-            self.p_negative /= total
-            self.p_neutral /= total
-        return self
-
-    def as_triplet(self) -> tuple[float, float, float]:
-        """Return ``(p_pos, p_neg, p_neu)`` in the scorer's canonical order."""
-        return self.p_positive, self.p_negative, self.p_neutral
-
-
-# --- LLM client ---------------------------------------------------------------
-# The system prompt sent with every scoring call comes from
-# ``settings.sentiment.system_prompt`` (env-overridable via
-# ``TYCHE_SENTIMENT_SYSTEM_PROMPT``; see ``tyche.common.config`` for the default).
-@lru_cache(maxsize=1)
-def _get_structured_llm():
-    """Build the singleton Azure OpenAI chat model wrapped for structured output.
-
-    ``TYCHE_SENTIMENT_API_KEY`` must be present in the environment (or ``.env``); the
-    endpoint, deployment and API version come from settings.
-    """
-    from langchain_openai import AzureChatOpenAI
-
-    cfg = settings.sentiment
-    if not cfg.api_key:
-        raise RuntimeError(
-            "TYCHE_SENTIMENT_API_KEY is not set — the Azure OpenAI sentiment scorer "
-            "needs an API key. Export it (export TYCHE_SENTIMENT_API_KEY=...) or put "
-            "it in the gitignored .env file."
+def _active_backends() -> list[str]:
+    backends = list(settings.sentiment_backends.active)
+    if not backends:
+        raise RuntimeError("TYCHE_SENTIMENT_BACKENDS resolved to an empty list")
+    unknown = [b for b in backends if b not in sentiment_service.AVAILABLE_BACKENDS]
+    if unknown:
+        raise ValueError(
+            f"unknown sentiment backend(s) {unknown} in TYCHE_SENTIMENT_BACKENDS; "
+            f"choose from {sentiment_service.AVAILABLE_BACKENDS}"
         )
-    llm = AzureChatOpenAI(
-        azure_endpoint=str(cfg.endpoint),
-        azure_deployment=str(cfg.deployment),
-        api_version=str(cfg.api_version),
-        api_key=str(cfg.api_key),
-        temperature=float(cfg.temperature),
-        timeout=float(cfg.request_timeout),
-        max_retries=0,  # retries are handled by tenacity around the call
-    )
-    log.info(
-        "sentiment LLM ready (Azure deployment=%s, api-version=%s)",
-        cfg.deployment,
-        cfg.api_version,
-    )
-    return llm.with_structured_output(SentimentScores)
+    return backends
 
 
-@lru_cache(maxsize=1)
-def get_model_revision() -> str:
-    """Model identity recorded on every output row (Azure deployment + api-version)."""
-    cfg = settings.sentiment
-    return f"azure:{cfg.deployment}@{cfg.api_version}"
+def get_model_revision(backend: str | None = None) -> str:
+    """Model identity for ``backend`` (default: the primary/first configured one)."""
+    backend = backend or _active_backends()[0]
+    return sentiment_service.get_backend(backend).model_revision()
 
 
-def _score_call(text: str) -> SentimentScores:
-    """One structured LLM call, retried on transient errors by the tenacity wrapper."""
-    from langchain_core.messages import HumanMessage, SystemMessage
-
-    llm = _get_structured_llm()
-    result = llm.invoke(
-        [
-            SystemMessage(content=str(settings.sentiment.system_prompt)),
-            HumanMessage(content=f"News summary:\n\n{text}"),
-        ]
-    )
-    # ``with_structured_output`` already returns a validated ``SentimentScores``; the
-    # explicit reconstruction re-runs the pydantic validators as a belt-and-braces
-    # guard against provider quirks (e.g. a raw dict slipping through).
-    return SentimentScores.model_validate(
-        result if isinstance(result, dict) else result.model_dump()
-    )
-
-
-@retry(
-    reraise=True,
-    stop=stop_after_attempt(int(settings.sentiment.max_retries)),
-    wait=wait_exponential(multiplier=1, min=1, max=30),
-    retry=retry_if_exception_type(Exception),
-)
-def _score_one(text: str) -> tuple[float, float, float, str]:
-    """Score a single summary, returning ``(p_pos, p_neg, p_neu, rationale)``.
-
-    Empty text short-circuits to fully neutral (no API call)."""
-    if not text or not text.strip():
-        return 0.0, 0.0, 1.0, "empty summary"
-    scores = _score_call(text)
-    p_pos, p_neg, p_neu = scores.as_triplet()
-    return p_pos, p_neg, p_neu, scores.rationale
-
-
-def _score_unique(texts: list[str]) -> dict[str, tuple[float, float, float, str]]:
-    """Score each unique text once, concurrently. Returns a text → triplet+rationale map."""
-    max_workers = max(1, int(settings.sentiment.max_workers))
-    log.info(
-        "scoring %d unique summaries via Azure OpenAI (%d concurrent workers)",
-        len(texts),
-        max_workers,
-    )
-    cache: dict[str, tuple[float, float, float, str]] = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        results = tqdm(
-            pool.map(_score_one, texts), total=len(texts), desc="scorer", unit="summary"
-        )
-        for text, res in zip(texts, results):
-            cache[text] = res
-    log.info("scored %d unique summaries via Azure OpenAI", len(texts))
-    return cache
+def _score_unique(
+    texts: list[str], backend: str
+) -> dict[str, tuple[float, float, float, str]]:
+    return sentiment_service.get_backend(backend).score_unique(texts)
 
 
 def score(summarized: pd.DataFrame) -> pd.DataFrame:
-    """Score each row's summary through Azure OpenAI — one call per unique summary
-    text, shared across every row carrying it. Emits per-row
-    ``agg_p_pos/agg_p_neg/agg_p_neu`` and ``raw_score = p_pos - p_neg`` (in [-1, 1],
-    ~0 when neutral dominates), carrying every upstream column through."""
-    revision = get_model_revision()
+    """Score each row's summary through every configured backend — one call per
+    unique summary text per backend, shared across every row carrying it. Emits
+    ``<backend>_agg_p_pos/neg/neu`` + ``<backend>_raw_score`` (``= p_pos - p_neg``,
+    in [-1, 1]) for every active backend, plus the canonical unprefixed columns from
+    the primary (first) backend, carrying every upstream column through."""
+    backends = _active_backends()
+    primary = backends[0]
 
     texts = summarized[Summary.text].fillna("").tolist()
     unique_texts = list(dict.fromkeys(texts))
-    log.info(
-        "scoring %d rows via Azure OpenAI (%s) — %d unique summaries to score",
-        len(texts),
-        revision,
-        len(unique_texts),
-    )
-    cache = _score_unique(unique_texts)
-
-    triplets = np.array([cache[t][:3] for t in texts], dtype=float).reshape(-1, 3)
     out = summarized.copy()
-    out[Aggregate.p_pos] = triplets[:, 0]
-    out[Aggregate.p_neg] = triplets[:, 1]
-    out[Aggregate.p_neu] = triplets[:, 2]
-    out[Aggregate.raw_score] = out[Aggregate.p_pos] - out[Aggregate.p_neg]
-    out[Score.rationale] = [cache[t][3] for t in texts]
-    out[Score.model_revision] = revision
-    log.info(
-        "scored %d rows via Azure OpenAI (raw_score mean=%.4f std=%.4f)",
-        len(out),
-        float(out[Aggregate.raw_score].mean()) if len(out) else 0.0,
-        float(out[Aggregate.raw_score].std(ddof=0)) if len(out) else 0.0,
-    )
+
+    for backend in backends:
+        revision = get_model_revision(backend)
+        log.info(
+            "scoring %d rows via backend=%s (%s) — %d unique summaries to score",
+            len(texts),
+            backend,
+            revision,
+            len(unique_texts),
+        )
+        cache = _score_unique(unique_texts, backend)
+        triplets = np.array([cache[t][:3] for t in texts], dtype=float).reshape(-1, 3)
+        rationales = [cache[t][3] for t in texts]
+        raw_score = triplets[:, 0] - triplets[:, 1]
+
+        p_pos_col, p_neg_col, p_neu_col, raw_col, rationale_col, revision_col = (
+            backend_score_columns(backend)
+        )
+        out[p_pos_col] = triplets[:, 0]
+        out[p_neg_col] = triplets[:, 1]
+        out[p_neu_col] = triplets[:, 2]
+        out[raw_col] = raw_score
+        out[rationale_col] = rationales
+        out[revision_col] = revision
+
+        if backend == primary:
+            out[Aggregate.p_pos] = triplets[:, 0]
+            out[Aggregate.p_neg] = triplets[:, 1]
+            out[Aggregate.p_neu] = triplets[:, 2]
+            out[Aggregate.raw_score] = raw_score
+            out[Score.rationale] = rationales
+            out[Score.model_revision] = revision
+
+        log.info(
+            "scored %d rows via backend=%s (raw_score mean=%.4f std=%.4f)",
+            len(out),
+            backend,
+            float(raw_score.mean()) if len(raw_score) else 0.0,
+            float(raw_score.std(ddof=0)) if len(raw_score) else 0.0,
+        )
     return out
 
 
-def score_texts(texts: list[str]) -> np.ndarray:
-    """Convenience: score a raw list of strings, returning an (n, 3) prob array in
-    (p_pos, p_neg, p_neu) order. Used by Audit A sanity checks."""
-    cache = _score_unique(list(dict.fromkeys(texts)))
+def score_texts(texts: list[str], backend: str | None = None) -> np.ndarray:
+    """Convenience: score a raw list of strings through ``backend`` (default: the
+    primary one), returning an (n, 3) prob array in (p_pos, p_neg, p_neu) order.
+    Used by Audit A sanity checks."""
+    backend = backend or _active_backends()[0]
+    cache = _score_unique(list(dict.fromkeys(texts)), backend)
     return np.array([cache[t][:3] for t in texts], dtype=float).reshape(-1, 3)

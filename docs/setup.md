@@ -36,12 +36,16 @@ cp .env.example .env
 ```
 
 Every setting has a working default except the Azure OpenAI credential used by
-the news-sentiment scorer:
+the default news-sentiment scorer backend (`gpt4o_mini`):
 
-- `TYCHE_SENTIMENT_API_KEY` — required to run the news pipeline's scoring stage
-- `HF_TOKEN` — optional; only needed for gated/private HuggingFace models or a
-  higher rate limit on model revision lookups (the summarizer and embedder load
-  public weights locally, no token needed by default)
+- `TYCHE_SENTIMENT_AZURE_API_KEY` — required to run the news pipeline's scoring
+  stage against the default `gpt4o_mini` backend (not needed for the local HF
+  backends — `finbert`, `finbert_minilm`, `mistral_7b_instruct`,
+  `llama2_13b_chat` — selected via `TYCHE_SENTIMENT_BACKENDS`)
+- `HF_TOKEN` — optional; only needed for gated/private HuggingFace models
+  (e.g. `llama2_13b_chat`) or a higher rate limit on model revision lookups
+  (the summarizer and embedder load public weights locally, no token needed
+  by default)
 
 See [Configuration Reference](configuration.md) for the full variable list and
 how each domain reads it.

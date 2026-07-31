@@ -2,7 +2,7 @@
 
 Moved out of ``tyche.common.config`` so the news domain owns its own tunables. Every
 section is a small frozen ``@dataclass`` whose fields are read from environment
-variables (via ``tyche.common.env``) at access time, so ``settings.model.name``,
+variables (via ``tyche.common.env``) at access time, so ``settings.sentiment_backends.active``,
 ``settings.neutralizer.rolling_window_days``, ... always reflect the live env. The
 shared composition root in ``tyche.common.config`` exposes this alongside the
 portfolio config.
@@ -40,28 +40,6 @@ class IngestConfig:
     )
     masked_placeholder: str = field(
         default_factory=lambda: _env("TYCHE_INGEST_MASKED_PLACEHOLDER", "the company")
-    )
-
-
-class ModelConfig:
-    name: str = field(
-        default_factory=lambda: _env("TYCHE_MODEL_NAME", "ProsusAI/finbert")
-    )
-    revision: str = field(default_factory=lambda: _env("TYCHE_MODEL_REVISION", "main"))
-    expected_labels: list[str] = field(
-        default_factory=lambda: _env_list(
-            "TYCHE_MODEL_EXPECTED_LABELS", ["positive", "negative", "neutral"]
-        )
-    )
-    max_tokens: int = field(
-        default_factory=lambda: _env("TYCHE_MODEL_MAX_TOKENS", 512, int)
-    )
-    batch_size: int = field(
-        default_factory=lambda: _env("TYCHE_MODEL_BATCH_SIZE", 32, int)
-    )
-    device: str = field(default_factory=lambda: _env("TYCHE_MODEL_DEVICE", "cpu"))
-    provider: str = field(
-        default_factory=lambda: _env("TYCHE_MODEL_PROVIDER", "hf-inference")
     )
 
 
@@ -146,7 +124,7 @@ class EmbeddingConfig:
     )
 
 
-_DEFAULT_SENTIMENT_SYSTEM_PROMPT = """\
+_DEFAULT_SYSTEM_PROMPT = """\
 You are a senior financial-markets sentiment analyst. You read a short summary of a \
 news item about a specific publicly-traded company or security and judge its likely \
 sentiment IMPACT ON THAT SECURITY from the perspective of an investor holding it.
@@ -180,11 +158,11 @@ Respond ONLY via the structured schema you are given."""
 
 
 @dataclass(frozen=True)
-class SentimentConfig:
+class AzureSentimentConfig:
     """Agent 5 — Sentiment scorer (Azure OpenAI ``gpt-4.0-mini`` via LangChain).
 
-    Replaces FinBERT: the summary is sent to an Azure OpenAI chat model with a
-    comprehensive financial-sentiment system prompt, and the model returns calibrated
+    The summary is sent to an Azure OpenAI chat model with a comprehensive
+    financial-sentiment system prompt, and the model returns calibrated
     positive/negative/neutral probabilities (validated with pydantic, retried with
     tenacity). ``endpoint``/``deployment``/``api_version`` reconstruct the Azure REST
     URL; ``api_key`` must be supplied via env (never hardcoded).
@@ -192,40 +170,202 @@ class SentimentConfig:
 
     endpoint: str = field(
         default_factory=lambda: _env(
-            "TYCHE_SENTIMENT_ENDPOINT",
+            "TYCHE_SENTIMENT_AZURE_ENDPOINT",
             "https://zanistagpteastus2.openai.azure.com",
         )
     )
     deployment: str = field(
-        default_factory=lambda: _env("TYCHE_SENTIMENT_DEPLOYMENT", "gpt-4o-mini")
+        default_factory=lambda: _env("TYCHE_SENTIMENT_AZURE_DEPLOYMENT", "gpt-4o-mini")
     )
     api_version: str = field(
         default_factory=lambda: _env(
-            "TYCHE_SENTIMENT_API_VERSION", "2024-12-01-preview"
+            "TYCHE_SENTIMENT_AZURE_API_VERSION", "2024-12-01-preview"
         )
     )
-    api_key: str = field(default_factory=lambda: _env("TYCHE_SENTIMENT_API_KEY", ""))
+    api_key: str = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_AZURE_API_KEY", "")
+    )
     temperature: float = field(
-        default_factory=lambda: _env("TYCHE_SENTIMENT_TEMPERATURE", 0.0, float)
+        default_factory=lambda: _env("TYCHE_SENTIMENT_AZURE_TEMPERATURE", 0.0, float)
     )
     # tenacity retry budget for transient Azure errors (rate limits, 5xx, timeouts).
     max_retries: int = field(
-        default_factory=lambda: _env("TYCHE_SENTIMENT_MAX_RETRIES", 5, int)
+        default_factory=lambda: _env("TYCHE_SENTIMENT_AZURE_MAX_RETRIES", 5, int)
     )
     request_timeout: float = field(
-        default_factory=lambda: _env("TYCHE_SENTIMENT_TIMEOUT", 60.0, float)
+        default_factory=lambda: _env("TYCHE_SENTIMENT_AZURE_TIMEOUT", 60.0, float)
     )
     # Concurrent sentiment calls (thread pool; I/O bound). One call per unique summary
     # string, so this is the effective sentiment-throughput knob.
     max_workers: int = field(
-        default_factory=lambda: _env("TYCHE_SENTIMENT_MAX_WORKERS", 8, int)
+        default_factory=lambda: _env("TYCHE_SENTIMENT_AZURE_MAX_WORKERS", 8, int)
     )
     # The financial-sentiment system prompt sent with every scoring call. Overridable
     # via env (e.g. to A/B a prompt variant) without a code change; defaults to the
     # comprehensive prompt above.
     system_prompt: str = field(
         default_factory=lambda: _env(
-            "TYCHE_SENTIMENT_SYSTEM_PROMPT", _DEFAULT_SENTIMENT_SYSTEM_PROMPT
+            "TYCHE_SENTIMENT_AZURE_SYSTEM_PROMPT", _DEFAULT_SYSTEM_PROMPT
+        )
+    )
+
+
+@dataclass(frozen=True)
+class SentimentBackendsConfig:
+    """Which sentiment backend(s) the Scorer runs, in order.
+
+    See ``tyche.news.service.sentiment`` for the backend implementations. Every
+    configured backend gets its own ``<backend>_``-prefixed output columns; the
+    first entry is also the "primary" backend, whose output additionally populates
+    the canonical unprefixed columns (``agg_p_pos``, ``raw_score``, ...) that the
+    Neutralizer, Audit A/B/D, and the output contract consume — so the default,
+    single-backend ``gpt4o_mini`` setup behaves exactly as before this existed.
+    """
+
+    active: list[str] = field(
+        default_factory=lambda: _env_list("TYCHE_SENTIMENT_BACKENDS", ["gpt4o_mini"])
+    )
+
+
+@dataclass(frozen=True)
+class FinbertConfig:
+    """Local HF sequence-classification checkpoint (3-class pos/neg/neu head)."""
+
+    name: str = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_FINBERT_NAME", "ProsusAI/finbert")
+    )
+    revision: str = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_FINBERT_REVISION", "main")
+    )
+    # "cpu" | "cuda" | "cuda:N" | "mps" | "auto" (auto picks CUDA > MPS > CPU).
+    device: str = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_FINBERT_DEVICE", "auto")
+    )
+    batch_size: int = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_FINBERT_BATCH_SIZE", 16, int)
+    )
+    # The checkpoint's classification-head output order — index i of the logits must
+    # be the class named at expected_labels[i]. Override if a checkpoint's head order
+    # differs from ProsusAI/finbert's.
+    expected_labels: list[str] = field(
+        default_factory=lambda: _env_list(
+            "TYCHE_SENTIMENT_FINBERT_LABELS", ["positive", "negative", "neutral"]
+        )
+    )
+
+
+@dataclass(frozen=True)
+class FinbertMiniLMConfig:
+    """Local HF sequence-classification checkpoint — a lighter/faster FinBERT variant.
+
+    Unlike ``ProsusAI/finbert``, there's no single universally-agreed MiniLM-distilled
+    FinBERT checkpoint on the Hub, so ``name`` has no built-in default — point it at
+    whichever checkpoint you've vetted before enabling this backend.
+    """
+
+    name: str = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_FINBERT_MINILM_NAME", "")
+    )
+    revision: str = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_FINBERT_MINILM_REVISION", "main")
+    )
+    device: str = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_FINBERT_MINILM_DEVICE", "auto")
+    )
+    batch_size: int = field(
+        default_factory=lambda: _env(
+            "TYCHE_SENTIMENT_FINBERT_MINILM_BATCH_SIZE", 16, int
+        )
+    )
+    expected_labels: list[str] = field(
+        default_factory=lambda: _env_list(
+            "TYCHE_SENTIMENT_FINBERT_MINILM_LABELS",
+            ["positive", "negative", "neutral"],
+        )
+    )
+
+
+@dataclass(frozen=True)
+class Mistral7BInstructConfig:
+    """Local Mistral-7B-Instruct sentiment backend — an OpenAI-compatible chat
+    endpoint (see docker-compose.sentiment-llms.yml), scored the exact same way as
+    ``AzureSentimentConfig``: a fixed system prompt sent with every call, parsed
+    via LangChain structured output.
+    """
+
+    base_url: str = field(
+        default_factory=lambda: _env(
+            "TYCHE_SENTIMENT_MISTRAL_BASE_URL", "http://localhost:8001/v1"
+        )
+    )
+    # Must match the server's --served-model-name.
+    model: str = field(
+        default_factory=lambda: _env(
+            "TYCHE_SENTIMENT_MISTRAL_MODEL", "mistral-7b-instruct"
+        )
+    )
+    # The OpenAI client requires a non-empty key even when the server doesn't check
+    # one (vLLM's default); set a real key if the server is put behind auth.
+    api_key: str = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_MISTRAL_API_KEY", "not-needed")
+    )
+    temperature: float = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_MISTRAL_TEMPERATURE", 0.0, float)
+    )
+    # tenacity retry budget for transient errors (server still warming up, timeouts).
+    max_retries: int = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_MISTRAL_MAX_RETRIES", 5, int)
+    )
+    request_timeout: float = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_MISTRAL_TIMEOUT", 60.0, float)
+    )
+    # Concurrent sentiment calls (thread pool; I/O bound) — same knob as Azure's.
+    max_workers: int = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_MISTRAL_MAX_WORKERS", 8, int)
+    )
+    # The one fixed financial-sentiment system prompt sent with every scoring call.
+    system_prompt: str = field(
+        default_factory=lambda: _env(
+            "TYCHE_SENTIMENT_MISTRAL_SYSTEM_PROMPT", _DEFAULT_SYSTEM_PROMPT
+        )
+    )
+
+
+@dataclass(frozen=True)
+class Llama2ChatConfig:
+    """Local Llama-2-13B-chat sentiment backend — an OpenAI-compatible chat
+    endpoint (see docker-compose.sentiment-llms.yml), scored the exact same way as
+    ``AzureSentimentConfig``: a fixed system prompt sent with every call, parsed
+    via LangChain structured output.
+    """
+
+    base_url: str = field(
+        default_factory=lambda: _env(
+            "TYCHE_SENTIMENT_LLAMA2_BASE_URL", "http://localhost:8002/v1"
+        )
+    )
+    # Must match the server's --served-model-name.
+    model: str = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_LLAMA2_MODEL", "llama2-13b-chat")
+    )
+    api_key: str = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_LLAMA2_API_KEY", "not-needed")
+    )
+    temperature: float = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_LLAMA2_TEMPERATURE", 0.0, float)
+    )
+    max_retries: int = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_LLAMA2_MAX_RETRIES", 5, int)
+    )
+    request_timeout: float = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_LLAMA2_TIMEOUT", 60.0, float)
+    )
+    max_workers: int = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_LLAMA2_MAX_WORKERS", 8, int)
+    )
+    system_prompt: str = field(
+        default_factory=lambda: _env(
+            "TYCHE_SENTIMENT_LLAMA2_SYSTEM_PROMPT", _DEFAULT_SYSTEM_PROMPT
         )
     )
 
@@ -328,7 +468,7 @@ class NewsSettings(Dynaconf):
     """Dynaconf subclass that exposes all tunables as env-var-backed ``@property``.
 
     No settings file is used — values come from environment variables (loaded from a
-    gitignored ``.env`` via ``load_dotenv``). Nested access (``settings.model.name``)
+    gitignored ``.env`` via ``load_dotenv``). Nested access (``settings.finbert.name``)
     returns a frozen dataclass section built from the current environment, so the
     config always reflects the live env at access time. The ``TYCHE_ENV`` variable
     selects a deployment profile (development / staging / production).
@@ -355,10 +495,6 @@ class NewsSettings(Dynaconf):
         return IngestConfig()
 
     @property
-    def model(self) -> ModelConfig:
-        return ModelConfig()
-
-    @property
     def summarizer(self) -> SummarizerConfig:
         return SummarizerConfig()
 
@@ -367,8 +503,28 @@ class NewsSettings(Dynaconf):
         return EmbeddingConfig()
 
     @property
-    def sentiment(self) -> SentimentConfig:
-        return SentimentConfig()
+    def azure(self) -> AzureSentimentConfig:
+        return AzureSentimentConfig()
+
+    @property
+    def sentiment_backends(self) -> SentimentBackendsConfig:
+        return SentimentBackendsConfig()
+
+    @property
+    def finbert(self) -> FinbertConfig:
+        return FinbertConfig()
+
+    @property
+    def finbert_minilm(self) -> FinbertMiniLMConfig:
+        return FinbertMiniLMConfig()
+
+    @property
+    def mistral_7b_instruct(self) -> Mistral7BInstructConfig:
+        return Mistral7BInstructConfig()
+
+    @property
+    def llama2_13b_chat(self) -> Llama2ChatConfig:
+        return Llama2ChatConfig()
 
     @property
     def aggregation(self) -> AggregationConfig:

@@ -60,7 +60,12 @@ with defaults):
 | Portfolio | `PortfolioConfig` | `TYCHE_PORTFOLIO_ALLOC_*` | BL tau/risk-aversion, covariance shrinkage, max weight, turnover penalty, transaction cost/slippage bps, cost model, risk-parity solver tolerance, HRP linkage |
 
 `Config.artifacts_dir` derives the per-run output directory from
-`paths.artifacts / train.target_distribution` (e.g. `benchmark/student_t`).
+`paths.artifacts / news_sentiment_model() / train.target_distribution` (e.g.
+`benchmark/gpt4o_mini/student_t`). `news_sentiment_model()` reads the primary
+(first) entry of the news pipeline's `TYCHE_SENTIMENT_BACKENDS` — see
+[News Sentiment Pipeline](news-pipeline.md) — so benchmark runs built on
+different sentiment backends (`gpt4o_mini`, `finbert`, ...) never overwrite
+each other.
 
 Environment overrides apply the moment a `Config` is built, so this is
 equivalent to editing the section's default in code:

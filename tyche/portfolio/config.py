@@ -36,6 +36,18 @@ def _env_int_tuple(key: str, default: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(int(v) for v in _env_list(key, [str(v) for v in default]))
 
 
+def news_sentiment_model() -> str:
+    """The primary sentiment backend (``TYCHE_SENTIMENT_BACKENDS``, first entry)
+    that produced ``sentiment_final`` in the tracked news-sentiment parquet this
+    run's ``paths.news_sentiment`` points at — used to key benchmark artifacts by
+    the news model they were built on, so runs against different sentiment
+    backends never overwrite each other."""
+    from tyche.news.config import settings as news_settings
+
+    backends = list(news_settings.sentiment_backends.active)
+    return backends[0] if backends else "unknown"
+
+
 @dataclass(frozen=True)
 class Paths:
     news_sentiment: Path = field(
@@ -58,7 +70,9 @@ class Paths:
     # Portfolio-run and model-training artifacts; ``Config.artifacts_dir`` appends the
     # target-distribution subdirectory (benchmark/student_t, benchmark/gaussian, ...).
     artifacts: Path = field(
-        default_factory=lambda: _env_path("TYCHE_PORTFOLIO_PATHS_ARTIFACTS", "benchmark")
+        default_factory=lambda: _env_path(
+            "TYCHE_PORTFOLIO_PATHS_ARTIFACTS", "benchmark"
+        )
     )
     news_embedding_cache: Path = field(
         default_factory=lambda: _env_path(
@@ -81,10 +95,14 @@ class SplitConfig:
     """
 
     in_sample_start: str = field(
-        default_factory=lambda: _env("TYCHE_PORTFOLIO_SPLIT_IN_SAMPLE_START", "2023-10-02")
+        default_factory=lambda: _env(
+            "TYCHE_PORTFOLIO_SPLIT_IN_SAMPLE_START", "2023-10-02"
+        )
     )
     in_sample_end: str = field(
-        default_factory=lambda: _env("TYCHE_PORTFOLIO_SPLIT_IN_SAMPLE_END", "2024-12-31")
+        default_factory=lambda: _env(
+            "TYCHE_PORTFOLIO_SPLIT_IN_SAMPLE_END", "2024-12-31"
+        )
     )
     # first train_fraction of in-sample days train, the remainder validate
     train_fraction: float = field(
@@ -199,9 +217,7 @@ class ModelConfig:
         default_factory=lambda: _env("TYCHE_PORTFOLIO_MODEL_COV_EPS", 1e-4, float)
     )
     sequence_encoder: str = field(  # lstm | attention
-        default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_MODEL_SEQUENCE_ENCODER", "lstm"
-        )
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_MODEL_SEQUENCE_ENCODER", "lstm")
     )
 
 
@@ -217,18 +233,18 @@ class TrainConfig:
         default_factory=lambda: _env("TYCHE_PORTFOLIO_TRAIN_LR", 1e-3, float)
     )
     weight_decay: float = field(
-        default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_TRAIN_WEIGHT_DECAY", 1e-5, float
-        )
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_TRAIN_WEIGHT_DECAY", 1e-5, float)
     )
     target_distribution: str = field(  # gaussian | student_t
         default_factory=lambda: _env(
             "TYCHE_PORTFOLIO_TRAIN_TARGET_DISTRIBUTION", "student_t"
         )
     )
-    student_t_df: float = field(  # degrees of freedom; must be > 2 for finite covariance
-        default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_TRAIN_STUDENT_T_DF", 5.0, float
+    student_t_df: float = (
+        field(  # degrees of freedom; must be > 2 for finite covariance
+            default_factory=lambda: _env(
+                "TYCHE_PORTFOLIO_TRAIN_STUDENT_T_DF", 5.0, float
+            )
         )
     )
     # Stochastic forward passes at prediction time. Dropout stays enabled only for
@@ -265,9 +281,7 @@ class PortfolioConfig:
         )
     )
     cov_shrinkage: float = field(  # blend predicted vs reference covariance
-        default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_ALLOC_COV_SHRINKAGE", 0.3, float
-        )
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_ALLOC_COV_SHRINKAGE", 0.3, float)
     )
     max_weight: float = field(  # per-asset cap (constrained MVO only)
         default_factory=lambda: _env("TYCHE_PORTFOLIO_ALLOC_MAX_WEIGHT", 0.40, float)
@@ -283,9 +297,7 @@ class PortfolioConfig:
         )
     )
     slippage_bps: float = field(
-        default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_ALLOC_SLIPPAGE_BPS", 5.0, float
-        )
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_ALLOC_SLIPPAGE_BPS", 5.0, float)
     )
     # Predicted mu/Sigma are log-return moments (the training target is a log return);
     # BL, the optimizers, and the cost model all assume arithmetic returns. When true,
@@ -299,9 +311,7 @@ class PortfolioConfig:
     # "round_trip" applies R' = (R(1-x) - 2x) / (1+x) per holding period with x scaled
     # by realized turnover; "linear" charges the older turnover * cost_rate.
     cost_model: str = field(
-        default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_ALLOC_COST_MODEL", "round_trip"
-        )
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_ALLOC_COST_MODEL", "round_trip")
     )
 
     # Risk parity (equal risk contribution), solved by cyclical coordinate descent.
@@ -335,9 +345,16 @@ class Config:
 
     @property
     def artifacts_dir(self) -> Path:
-        """Benchmark output directory for this run, split per target distribution
-        (e.g. ``benchmark/student_t``, ``benchmark/gaussian``)."""
-        return self.paths.artifacts / self.train.target_distribution
+        """Benchmark output directory for this run, split by the news-sentiment
+        model the run's news feature branch was built on and then by target
+        distribution (e.g. ``benchmark/gpt4o_mini/student_t``,
+        ``benchmark/finbert/gaussian``) — so runs against different sentiment
+        backends never overwrite each other."""
+        return (
+            self.paths.artifacts
+            / news_sentiment_model()
+            / self.train.target_distribution
+        )
 
 
 def default_config() -> Config:

@@ -46,7 +46,7 @@ def audit_a() -> None:
         "Audit A START: checking %d sanity sentences on %s (rev=%s); "
         "each sentence must be dominated by its expected class with prob > 0.5",
         len(sentences),
-        settings.sentiment.deployment,
+        settings.azure.deployment,
         revision,
     )
     probs = scorer.score_texts([s["text"] for s in sentences])  # (n, 3) pos/neg/neu

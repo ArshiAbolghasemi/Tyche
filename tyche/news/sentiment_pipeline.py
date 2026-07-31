@@ -26,7 +26,7 @@ from tyche.news.agents import (
     summarizer,
 )
 from tyche.news.graph import build_graph
-from tyche.news.records import OUTPUT_COLUMNS
+from tyche.news.records import OUTPUT_COLUMNS, backend_score_columns
 
 log = get_logger("tyche.main")
 
@@ -40,9 +40,16 @@ def _ingest_limited(input_path: Optional[str], limit: Optional[int]) -> pd.DataF
 def _write_contract(
     neutralized: pd.DataFrame, output_path: Optional[str]
 ) -> pd.DataFrame:
-    contract = neutralized[
-        [c for c in OUTPUT_COLUMNS if c in neutralized.columns]
-    ].copy()
+    # Every configured sentiment backend gets its own <backend>_-prefixed columns
+    # (see tyche.news.agents.scorer); the primary backend's copy already rides along
+    # via OUTPUT_COLUMNS's canonical agg_p_pos/raw_score/... columns.
+    backend_columns = [
+        c
+        for backend in settings.sentiment_backends.active
+        for c in backend_score_columns(backend)
+    ]
+    columns = list(dict.fromkeys([*OUTPUT_COLUMNS, *backend_columns]))
+    contract = neutralized[[c for c in columns if c in neutralized.columns]].copy()
     out_path = Path(str(output_path or settings.paths.output))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     contract.to_parquet(out_path, index=False)

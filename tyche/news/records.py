@@ -76,6 +76,21 @@ class Aggregate:
     raw_score: str = "raw_score"
 
 
+def backend_score_columns(backend: str) -> tuple[str, str, str, str, str, str]:
+    """``<backend>_``-prefixed column names for one sentiment backend's output:
+    ``(p_pos, p_neg, p_neu, raw_score, rationale, model_revision)``. Lets the Scorer
+    emit every configured backend's output side by side without colliding with the
+    canonical unprefixed columns the primary backend also populates."""
+    return (
+        f"{backend}_{Aggregate.p_pos}",
+        f"{backend}_{Aggregate.p_neg}",
+        f"{backend}_{Aggregate.p_neu}",
+        f"{backend}_{Aggregate.raw_score}",
+        f"{backend}_{Score.rationale}",
+        f"{backend}_{Score.model_revision}",
+    )
+
+
 # --- Agent 5 — Neutralizer output columns ---
 @dataclass(frozen=True)
 class Neutralize:

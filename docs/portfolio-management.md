@@ -103,6 +103,9 @@ Per-holding-period model training/prediction is reused across every
 transaction-cost scenario for that holding period (the model has no
 transaction-cost dependence), so sweeping cost scenarios is cheap relative to
 sweeping holding periods. Artifacts land under
-`benchmark/<target_distribution>/` — see
-[Evaluation & Reporting](evaluation-reporting.md) for what's written and how
-to turn it into report tables.
+`benchmark/<news_sentiment_model>/<target_distribution>/` — keyed first by
+the news pipeline's primary sentiment backend (`TYCHE_SENTIMENT_BACKENDS`,
+first entry — see [News Sentiment Pipeline](news-pipeline.md)) and then by
+`TYCHE_PORTFOLIO_TRAIN_TARGET_DISTRIBUTION`, so runs built on different
+sentiment backends or target distributions never overwrite each other (e.g.
+`benchmark/gpt4o_mini/student_t/`, `benchmark/finbert/gaussian/`).
