@@ -39,6 +39,11 @@ class Article:
     valid_time: str = "valid_time"
     transaction_time: str = "transaction_time"
     full_text: str = "full_text"
+    # Static business description of the ticker's company (from the source feed's
+    # ``Description`` column, constant per ticker). Not news — it is standing
+    # context handed to the LLM scorer so it knows what the company actually does.
+    # Empty when the source carries no description for that ticker.
+    description: str = "ticker_description"
 
 
 # --- Agent 2 — Summarizer output columns ---
@@ -114,6 +119,7 @@ OUTPUT_COLUMNS: list[str] = [
     Article.valid_time,
     Article.transaction_time,
     Article.full_text,
+    Article.description,
     Aggregate.p_pos,
     Aggregate.p_neg,
     Aggregate.p_neu,

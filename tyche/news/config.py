@@ -22,7 +22,7 @@ from tyche.common.env import _env, _env_list
 @dataclass(frozen=True)
 class PathsConfig:
     input: str = field(
-        default_factory=lambda: _env("TYCHE_PATHS_INPUT", "data/zanista/news.parquet")
+        default_factory=lambda: _env("TYCHE_PATHS_INPUT", "data/rl2k/news.parquet")
     )
     output: str = field(
         default_factory=lambda: _env(

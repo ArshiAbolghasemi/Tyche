@@ -27,7 +27,13 @@ import pandas as pd
 
 from tyche.news.config import settings
 from tyche.common.logging import get_logger
-from tyche.news.records import Aggregate, Score, Summary, backend_score_columns
+from tyche.news.records import (
+    Aggregate,
+    Article,
+    Score,
+    Summary,
+    backend_score_columns,
+)
 from tyche.news.service import sentiment as sentiment_service
 
 log = get_logger(__name__)
@@ -58,23 +64,55 @@ def _score_unique(
     return sentiment_service.get_backend(backend).score_unique(texts)
 
 
+def _with_context(summary: str, description: str) -> str:
+    """Prepend the ticker's standing business description to the news summary.
+
+    Gives the model the domain context to read specialist news correctly (a trial
+    readout means something different for a biotech than for a bank). Rows whose
+    feed carries no description fall back to the bare summary.
+    """
+    if not summary or not summary.strip() or not description or not description.strip():
+        return summary
+    return f"Company background: {description.strip()}\n\nNews: {summary.strip()}"
+
+
+def _payload_texts(summarized: pd.DataFrame, backend: str) -> list[str]:
+    """The exact strings sent to ``backend``, one per row.
+
+    Context-accepting backends get the ticker description folded in; the rest get
+    the bare summary. Because the description is part of the string, per-backend
+    call caching still dedupes correctly: two rows share a call only if both their
+    summary *and* their company context match.
+    """
+    summaries = summarized[Summary.text].fillna("").tolist()
+    if (
+        not sentiment_service.get_backend(backend).accepts_context
+        or Article.description not in summarized.columns
+    ):
+        return summaries
+    descriptions = summarized[Article.description].fillna("").tolist()
+    return [_with_context(s, d) for s, d in zip(summaries, descriptions)]
+
+
 def score(summarized: pd.DataFrame) -> pd.DataFrame:
     """Score each row's summary through every configured backend — one call per
-    unique summary text per backend, shared across every row carrying it. Emits
+    unique payload per backend, shared across every row carrying it. Emits
     ``<backend>_agg_p_pos/neg/neu`` + ``<backend>_raw_score`` (``= p_pos - p_neg``,
     in [-1, 1]) for every active backend, plus the canonical unprefixed columns from
-    the primary (first) backend, carrying every upstream column through."""
+    the primary (first) backend, carrying every upstream column through.
+
+    Prompted backends are additionally handed the ticker's business description as
+    standing context (see ``_payload_texts``)."""
     backends = _active_backends()
     primary = backends[0]
-
-    texts = summarized[Summary.text].fillna("").tolist()
-    unique_texts = list(dict.fromkeys(texts))
     out = summarized.copy()
 
     for backend in backends:
         revision = get_model_revision(backend)
+        texts = _payload_texts(summarized, backend)
+        unique_texts = list(dict.fromkeys(texts))
         log.info(
-            "scoring %d rows via backend=%s (%s) — %d unique summaries to score",
+            "scoring %d rows via backend=%s (%s) — %d unique payloads to score",
             len(texts),
             backend,
             revision,

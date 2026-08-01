@@ -123,6 +123,13 @@ class SentimentScores(BaseModel):
 class SentimentBackend(ABC):
     key: str
 
+    # Whether this backend benefits from standing context (the ticker's business
+    # description) prepended to the summary. True for prompted chat models, which
+    # can use it to judge domain-specific news. False for the FinBERT-family
+    # classifiers: they are 512-token sentence models, so a few hundred tokens of
+    # boilerplate company description would crowd out the news text itself.
+    accepts_context: bool = False
+
     @abstractmethod
     def score_unique(self, texts: list[str]) -> dict[str, SentimentTriplet]:
         """Score each unique text once. Returns a text → triplet+rationale map."""
@@ -154,6 +161,8 @@ class ChatCompletionsSentimentBackend(SentimentBackend):
     # right for models fine-tuned for it; local servers override this — see
     # ``LocalOpenAICompatibleBackend``.
     structured_output_method: str | None = None
+
+    accepts_context = True
 
     def __init__(self, key: str, config_getter: Callable[[], Any]) -> None:
         self.key = key

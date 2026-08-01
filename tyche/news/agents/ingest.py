@@ -10,7 +10,18 @@ read for dev / smoke runs.
 Parses publication time (``valid_time``), stamps processing time
 (``transaction_time``), builds the text field, explodes the multi-ticker
 ``symbols`` column into one row per (article, ticker), and assigns a stable
-``group_key`` and per-article ``article_id`` (uuid, shared across a symbol set).
+``group_key`` and per-article ``article_id`` (the feed's own id when it has one,
+else a uuid shared across a symbol set).
+
+Two source shapes are supported, distinguished by which columns are present:
+
+* **rl2k** — already one row per (article, ticker): a short ``snippet`` (passed
+  straight through as the summary, since it is already summary-length), a bare
+  ``symbol`` plus an exchange-qualified ``ticker`` ("NASDAQ:AADI") the exchange is
+  split out of, a stable ``id``, and a per-company ``Description`` carried as
+  standing ticker context for the scorer.
+* **zanista** — full ``title``/``content`` articles with a multi-value ``symbols``
+  column to explode and a pre-computed ``summary`` on some rows.
 """
 
 from __future__ import annotations
@@ -41,6 +52,13 @@ _SOURCE_COLUMNS = [
     "content",
     "symbols",
     "summary",  # zanista source ships a pre-computed summary for ~35% of rows
+    # rl2k source: one row per (article, ticker) already, with a short ``snippet``
+    # instead of title/content, a bare ``symbol`` alongside an exchange-qualified
+    # ``ticker`` ("NASDAQ:AADI"), a stable ``id``, and a per-company ``Description``.
+    "id",
+    "symbol",
+    "snippet",
+    "Description",
 ]
 
 
@@ -82,6 +100,18 @@ def _build_text(title: str, content: str) -> str:
     return title or content
 
 
+def _split_exchange(qualified: str, fallback: str) -> tuple[str, str]:
+    """Split an exchange-qualified ticker ("NASDAQ:AADI") into ``(exchange, symbol)``.
+
+    Sources that ship a bare symbol in its own column pass it as ``fallback``; a
+    ticker with no ``EXCHANGE:`` prefix yields an empty exchange.
+    """
+    if ":" in qualified:
+        exchange, _, symbol = qualified.partition(":")
+        return exchange.strip(), (fallback or symbol.strip())
+    return "", (fallback or qualified)
+
+
 def _parse_symbols(raw: object, primary: str) -> list[str]:
     """Return the deduplicated ticker set for a row (primary first)."""
     text = _clean(raw)
@@ -105,23 +135,41 @@ def ingest(input_path: str | None = None, nrows: int | None = None) -> pd.DataFr
 
     rows: list[dict] = []
     for _, row in frame.iterrows():
+        # ``snippet`` (rl2k) is a short, already-summary-length blurb; title/content
+        # (zanista) is a full article. Either becomes the article text.
+        snippet = _clean(row.get("snippet"))
         title, content = _clean(row.get("title")), _clean(row.get("content"))
-        text = _build_text(title, content)
+        text = snippet or _build_text(title, content)
         if not text:
-            continue  # drop rows with no title AND no content
+            continue  # drop rows with no usable text
 
         valid_time = pd.to_datetime(row.get("date"), utc=True, errors="coerce")
         if pd.isna(valid_time):
             continue
-        exchange, itype = _clean(row.get("exchange")), _clean(row.get("type"))
-        name = _clean(row.get("name")) or _clean(row.get("Name"))
-        group_key = ":".join(_clean(row.get(c)) or "NA" for c in group_cols)
-        article_id = str(uuid.uuid1())  # one id per article, shared across its tickers
+        itype = _clean(row.get("type"))
+        # rl2k qualifies the ticker as "EXCHANGE:SYMBOL" and has no exchange column.
+        raw_ticker, symbol = _clean(row.get("ticker")), _clean(row.get("symbol"))
+        exchange = _clean(row.get("exchange"))
+        if not exchange:
+            exchange, symbol = _split_exchange(raw_ticker, symbol)
+        # ``name`` is what the portfolio side canonicalizes to a universe symbol, so
+        # fall back to the bare ticker when the feed carries no company-name column.
+        name = _clean(row.get("name")) or _clean(row.get("Name")) or symbol
+        # Standing per-company context for the scorer, not news.
+        description = _clean(row.get("Description"))
+        group_key = ":".join(
+            _clean(row.get(c)) or (exchange if c == "exchange" else "") or "NA"
+            for c in group_cols
+        )
+        # Prefer the feed's own stable article id so re-runs are reproducible;
+        # otherwise mint one per article, shared across its tickers.
+        article_id = _clean(row.get("id")) or str(uuid.uuid1())
         # Carried through as-is; the summarizer skips generation for rows where this
-        # is already non-empty and only summarizes the ones that need it.
-        existing_summary = _clean(row.get("summary"))
+        # is already non-empty and only summarizes the ones that need it. A snippet is
+        # already summary-length, so it is passed straight through as the summary.
+        existing_summary = _clean(row.get("summary")) or snippet
 
-        for ticker in _parse_symbols(row.get("symbols"), _clean(row.get("ticker"))):
+        for ticker in _parse_symbols(row.get("symbols"), symbol or raw_ticker):
             rows.append(
                 {
                     Article.id: article_id,
@@ -134,6 +182,7 @@ def ingest(input_path: str | None = None, nrows: int | None = None) -> pd.DataFr
                     Article.valid_time: valid_time.to_pydatetime(),
                     Article.transaction_time: now,
                     Article.full_text: text,
+                    Article.description: description,
                     Summary.text: existing_summary,
                 }
             )
