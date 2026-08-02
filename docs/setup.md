@@ -40,7 +40,7 @@ the default news-sentiment scorer backend (`gpt4o_mini`):
 
 - `TYCHE_SENTIMENT_AZURE_API_KEY` — required to run the news pipeline's scoring
   stage against the default `gpt4o_mini` backend (not needed for the local HF
-  backends — `finbert`, `finbert_minilm`, `mistral_7b_instruct`,
+  backends — `finbert`, `mistral_7b_instruct`,
   `llama2_13b_chat` — selected via `TYCHE_SENTIMENT_BACKENDS`)
 - `HF_TOKEN` — optional; only needed for gated/private HuggingFace models
   (e.g. `llama2_13b_chat`) or a higher rate limit on model revision lookups
@@ -64,7 +64,7 @@ report generation.
 
 ## 4. Serve the sentiment models you want to test
 
-The Scorer can run any of five sentiment backends, and only some of them need a
+The Scorer can run any of four sentiment backends, and only some of them need a
 model server. Which backends run is chosen with `TYCHE_SENTIMENT_BACKENDS` (see
 [News Sentiment Pipeline](news-pipeline.md)).
 
@@ -72,7 +72,6 @@ model server. Which backends run is chosen with `TYCHE_SENTIMENT_BACKENDS` (see
 | --- | --- | --- |
 | `gpt4o_mini` | Hosted Azure OpenAI call | `TYCHE_SENTIMENT_AZURE_API_KEY` |
 | `finbert` | HF weights loaded in-process onto CPU/CUDA/MPS | nothing — weights download on first use |
-| `finbert_minilm` | HF weights loaded in-process onto CPU/CUDA/MPS | `TYCHE_SENTIMENT_FINBERT_MINILM_NAME` (no default checkpoint) |
 | `mistral_7b_instruct` | Local OpenAI-compatible HTTP server | start the `mistral` container below |
 | `llama2_13b_chat` | Local OpenAI-compatible HTTP server | start the `llama2` container below |
 

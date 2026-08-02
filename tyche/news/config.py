@@ -255,37 +255,6 @@ class FinbertConfig:
 
 
 @dataclass(frozen=True)
-class FinbertMiniLMConfig:
-    """Local HF sequence-classification checkpoint — a lighter/faster FinBERT variant.
-
-    Unlike ``ProsusAI/finbert``, there's no single universally-agreed MiniLM-distilled
-    FinBERT checkpoint on the Hub, so ``name`` has no built-in default — point it at
-    whichever checkpoint you've vetted before enabling this backend.
-    """
-
-    name: str = field(
-        default_factory=lambda: _env("TYCHE_SENTIMENT_FINBERT_MINILM_NAME", "")
-    )
-    revision: str = field(
-        default_factory=lambda: _env("TYCHE_SENTIMENT_FINBERT_MINILM_REVISION", "main")
-    )
-    device: str = field(
-        default_factory=lambda: _env("TYCHE_SENTIMENT_FINBERT_MINILM_DEVICE", "auto")
-    )
-    batch_size: int = field(
-        default_factory=lambda: _env(
-            "TYCHE_SENTIMENT_FINBERT_MINILM_BATCH_SIZE", 16, int
-        )
-    )
-    expected_labels: list[str] = field(
-        default_factory=lambda: _env_list(
-            "TYCHE_SENTIMENT_FINBERT_MINILM_LABELS",
-            ["positive", "negative", "neutral"],
-        )
-    )
-
-
-@dataclass(frozen=True)
 class Mistral7BInstructConfig:
     """Local Mistral-7B-Instruct sentiment backend — an OpenAI-compatible chat
     endpoint (see docker-compose.sentiment-llms.yml), scored the exact same way as
@@ -513,10 +482,6 @@ class NewsSettings(Dynaconf):
     @property
     def finbert(self) -> FinbertConfig:
         return FinbertConfig()
-
-    @property
-    def finbert_minilm(self) -> FinbertMiniLMConfig:
-        return FinbertMiniLMConfig()
 
     @property
     def mistral_7b_instruct(self) -> Mistral7BInstructConfig:

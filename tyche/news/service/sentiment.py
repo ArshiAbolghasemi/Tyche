@@ -8,7 +8,7 @@ Backends
     Local OpenAI-compatible chat endpoints (e.g. vLLM's OpenAI server serving a
     quantized, bf16-compute checkpoint — see ``docker-compose.sentiment-llms.yml``
     at the repo root).
-``finbert`` / ``finbert_minilm``
+``finbert``
     Local HF sequence-classification checkpoints (3-class pos/neg/neu head), loaded
     directly onto a local device (CPU/CUDA/MPS) — no API call, no prompt.
 
@@ -61,7 +61,6 @@ log = get_logger(__name__)
 AVAILABLE_BACKENDS: tuple[str, ...] = (
     "gpt4o_mini",
     "finbert",
-    "finbert_minilm",
     "mistral_7b_instruct",
     "llama2_13b_chat",
 )
@@ -325,7 +324,7 @@ class LocalOpenAICompatibleBackend(ChatCompletionsSentimentBackend):
 
 
 # ===============================================================================
-# finbert / finbert_minilm — local HF sequence-classification checkpoints
+# finbert — local HF sequence-classification checkpoint
 # ===============================================================================
 _POLARITY_ALIASES = {
     "positive": {"positive", "pos", "bullish"},
@@ -467,7 +466,6 @@ class HFClassifierSentimentBackend(SentimentBackend):
 def _backend_config(key: str):
     return {
         "finbert": settings.finbert,
-        "finbert_minilm": settings.finbert_minilm,
         "mistral_7b_instruct": settings.mistral_7b_instruct,
         "llama2_13b_chat": settings.llama2_13b_chat,
     }[key]
@@ -478,7 +476,7 @@ def get_backend(key: str) -> SentimentBackend:
     """Return the (singleton, lazily-loaded) backend for ``key``."""
     if key == "gpt4o_mini":
         return AzureGpt4oMiniBackend()
-    if key in ("finbert", "finbert_minilm"):
+    if key == "finbert":
         return HFClassifierSentimentBackend(key, _backend_config(key))
     if key in ("mistral_7b_instruct", "llama2_13b_chat"):
         return LocalOpenAICompatibleBackend(key, lambda: _backend_config(key))
