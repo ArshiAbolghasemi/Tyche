@@ -13,7 +13,26 @@ from tyche.portfolio.config import Config
 from tyche.portfolio.data.universe import to_canonical
 
 
-_NEWS_COLUMNS = ["name", "valid_time", "sentiment_final", "summary_text"]
+_NEWS_COLUMNS = ["name", "sentiment_final", "summary_text"]
+# Publication-time column, in priority order: feeds that keep their own ``date``
+# column are read from that; otherwise the pipeline's normalized ``valid_time``.
+# Every news feature window is selected on this timestamp, so picking the wrong
+# one silently shifts which articles land on which trading day.
+_NEWS_TIME_COLUMNS = ["date", "valid_time"]
+
+
+def _news_time_column(path) -> str:
+    """The publication-time column present in the sentiment file."""
+    import pyarrow.parquet as pq
+
+    available = set(pq.ParquetFile(path).schema_arrow.names)
+    for candidate in _NEWS_TIME_COLUMNS:
+        if candidate in available:
+            return candidate
+    raise KeyError(
+        f"{path} has no publication-time column — expected one of "
+        f"{_NEWS_TIME_COLUMNS}, found {sorted(available)}"
+    )
 
 
 def load_news_sentiment(cfg: Config) -> pd.DataFrame:
@@ -21,10 +40,13 @@ def load_news_sentiment(cfg: Config) -> pd.DataFrame:
 
     Every article is a row and every row carries its own score. The portfolio feature
     stage clusters near-duplicate summaries into story groups before aggregation."""
-    df = pd.read_parquet(cfg.paths.news_sentiment, columns=_NEWS_COLUMNS)
+    path = cfg.paths.news_sentiment
+    time_col = _news_time_column(path)
+    df = pd.read_parquet(path, columns=[*_NEWS_COLUMNS, time_col])
     df["asset"] = to_canonical(df["name"])
     df = df.dropna(subset=["asset"])
-    df["ts"] = pd.to_datetime(df["valid_time"], utc=True)
+    df["ts"] = pd.to_datetime(df[time_col], utc=True)
+    df = df.dropna(subset=["ts"])
     keep = ["asset", "ts", "sentiment_final", "summary_text"]
     return df[keep].sort_values("ts").reset_index(drop=True)
 
