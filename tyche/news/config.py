@@ -157,6 +157,25 @@ signals conflict or are weak, spread probability mass and lean NEUTRAL.
 Respond ONLY via the structured schema you are given."""
 
 
+# Llama-2-chat follows short, concrete classification instructions more reliably
+# than the longer analyst-oriented prompt above. The response schema still controls
+# the JSON shape; this prompt only establishes the decision rule.
+_DEFAULT_LLAMA2_SYSTEM_PROMPT = """\
+Classify the likely investment impact of the news on the named company or security.
+
+Choose POSITIVE when the facts are favorable, such as increased revenue, an earnings or
+profit beat, raised guidance, a new contract, a buyback, or an upgrade.
+Choose NEGATIVE when the facts are unfavorable, such as a reported loss, revenue or
+earnings miss, profit warning, cut guidance, lawsuit, recall, downgrade, or a share-price
+drop caused by bad company news.
+Choose NEUTRAL only for administrative or factual items with no likely price impact, such
+as a meeting date, or when the information is genuinely mixed or unrelated to the company.
+
+Do not choose NEUTRAL merely because the text is short. For a clear one-sided statement,
+put most probability on its matching class. Judge the company, not the prose's tone.
+Return only the required structured response."""
+
+
 @dataclass(frozen=True)
 class AzureSentimentConfig:
     """Agent 5 — Sentiment scorer (Azure OpenAI ``gpt-4.0-mini`` via LangChain).
@@ -334,7 +353,7 @@ class Llama2ChatConfig:
     )
     system_prompt: str = field(
         default_factory=lambda: _env(
-            "TYCHE_SENTIMENT_LLAMA2_SYSTEM_PROMPT", _DEFAULT_SYSTEM_PROMPT
+            "TYCHE_SENTIMENT_LLAMA2_SYSTEM_PROMPT", _DEFAULT_LLAMA2_SYSTEM_PROMPT
         )
     )
 
