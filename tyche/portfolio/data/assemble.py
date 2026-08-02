@@ -60,7 +60,14 @@ def assemble(cfg: Config) -> AlignedData:
     daily_raw = load_daily(cfg)
     news_raw = load_news_sentiment(cfg)
 
-    assets = resolve_universe(daily_raw, set(news_raw["asset"].unique()), cfg.universe)
+    # Select on in-sample data only — see resolve_universe for why picking the
+    # cross-section over the full sample is look-ahead plus survivorship bias.
+    assets = resolve_universe(
+        daily_raw,
+        set(news_raw["asset"].unique()),
+        cfg.universe,
+        selection_end=pd.Timestamp(cfg.split.in_sample_end, tz="UTC"),
+    )
     daily_raw = daily_raw[daily_raw["asset"].isin(assets)].reset_index(drop=True)
     news_raw = news_raw[news_raw["asset"].isin(assets)].reset_index(drop=True)
     days = _trading_days(daily_raw, assets)

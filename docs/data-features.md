@@ -36,12 +36,13 @@ uses information available at or before `d`'s close):
   ranges, ratios, rolling volatility/momentum/RSI/ATR/z-score), one row per
   `(asset, date)`. Raw prices are never fed directly to the model.
 - **News** (`features/news.py`) — exact-window, centroid-representative story
-  sentiment. For each `(asset, day)`, articles in a trailing selection window
-  are clustered into stories via a cosine-similarity graph over local text
-  embeddings (GPU-accelerated when available); each story is represented by
+  sentiment. For decision day `t`, the window is strictly lagged: effective-news
+  dates `t−30` through `t−1`; articles mapped to `t` are excluded. Articles in
+  that window are clustered into stories via a cosine-similarity graph over local
+  text embeddings (GPU-accelerated when available); each story is represented by
   its centroid-closest article. Daily features are the mean representative
-  sentiment and the log count of unique stories in the window. Days with no
-  news are zero, never forward-filled.
+  sentiment and the log count of unique stories in the window. Days with no news
+  are zero, never forward-filled.
 
 ## Windowing and splitting
 

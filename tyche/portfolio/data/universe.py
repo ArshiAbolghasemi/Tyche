@@ -37,7 +37,10 @@ def to_canonical(series: pd.Series) -> pd.Series:
 
 
 def resolve_universe(
-    daily: pd.DataFrame, news_assets: set[str], cfg: UniverseConfig
+    daily: pd.DataFrame,
+    news_assets: set[str],
+    cfg: UniverseConfig,
+    selection_end: pd.Timestamp | None = None,
 ) -> list[str]:
     """Pick the traded cross-section from the available data.
 
@@ -49,9 +52,18 @@ def resolve_universe(
        a rectangular panel rather than one whose membership changes by day.
     3. Rank what survives by median dollar volume and take the top ``size``.
 
-    The cap is a hardware constraint, not a modelling preference: the network emits
-    an ``N x N`` covariance and factorizes it every forward pass, so cost grows as
-    ``N^3``. ``cfg.symbols`` bypasses the ranking when you want a fixed list.
+    Every step is evaluated **only on data up to ``selection_end``** (the in-sample
+    boundary). Choosing the universe over the full sample would be look-ahead of the
+    worst kind: ranking by liquidity measured partly in the test period lets the
+    backtest trade names it could only have identified later, and requiring a
+    complete series over the whole sample additionally selects for survival — the
+    names that blew up or delisted mid-sample are silently excluded, which flatters
+    every strategy at once. Passing ``None`` restores the (biased) full-sample
+    behaviour and is intended only for diagnostics.
+
+    The size cap is a hardware constraint, not a modelling preference: the network
+    emits an ``N x N`` covariance and factorizes it every forward pass, so cost grows
+    as ``N^3``. ``cfg.symbols`` bypasses the ranking when you want a fixed list.
     """
     priced = set(daily["asset"].unique())
     candidates = priced & news_assets
@@ -62,6 +74,17 @@ def resolve_universe(
         )
 
     frame = daily[daily["asset"].isin(candidates)]
+    if selection_end is not None:
+        frame = frame[frame["date"] <= selection_end]
+        if frame.empty:
+            raise RuntimeError(
+                f"no price rows on or before the in-sample end {selection_end.date()}; "
+                "universe cannot be selected without look-ahead"
+            )
+        log.info(
+            "universe: selecting on in-sample data only (through %s)",
+            selection_end.date(),
+        )
 
     if cfg.require_full_history:
         counts = frame.groupby("asset")["date"].nunique()

@@ -10,8 +10,9 @@ features then use only those representative article scores: the mean representat
 sentiment and the log number of unique story components in the trailing selection
 window.
 
-Every feature is built from articles published at or before the trading day it lands
-on. Days with no news are zeros — never forward-filled.
+Every feature is built from articles mapped to the prior 30 calendar days; the
+decision day's articles are deliberately excluded. Days with no news are zeros —
+never forward-filled.
 """
 
 from __future__ import annotations
@@ -217,6 +218,25 @@ def _representative_window_features(
     return float(scores.mean()), int(len(scores))
 
 
+def _effective_publication_day(ts: pd.Series, cfg: Config) -> pd.DatetimeIndex:
+    """The calendar day from which an article is tradable.
+
+    Articles published after the session close cannot inform a decision taken at
+    that close, so they are pushed to the next calendar day before being snapped
+    onto the trading calendar. ``news_cutoff_utc_hour`` is the close expressed in
+    UTC (16:00 America/New_York is 20:00 UTC in winter, 21:00 in summer; the fixed
+    default of 20:00 is the conservative choice, since being an hour early only ever
+    delays an article by one session — it can never pull one forward).
+    """
+    stamps = pd.to_datetime(ts, utc=True)
+    cutoff = float(cfg.news.cutoff_utc_hour)
+    hour = stamps.dt.hour + stamps.dt.minute / 60.0 + stamps.dt.second / 3600.0
+    day = stamps.dt.normalize()
+    after_close = hour > cutoff
+    day = day + pd.to_timedelta(after_close.astype(int), unit="D")
+    return pd.DatetimeIndex(day)
+
+
 def _empty_aggregate(trading_days: pd.DatetimeIndex) -> pd.DataFrame:
     """An empty aggregate whose ``date`` dtype matches the trading-day index.
 
@@ -244,18 +264,16 @@ def _aggregate_selection_windows(
     if df.empty:
         return _empty_aggregate(trading_days)
 
-    if not cfg.news.dedup_enabled:
-        return _aggregate(df)
-
-    embedding_by_text = _embedding_lookup(df, cfg)
+    embedding_by_text = _embedding_lookup(df, cfg) if cfg.news.dedup_enabled else {}
     lookback = pd.Timedelta(days=int(cfg.news.dedup_lookback_days))
-    device = resolve_device(cfg.news.dedup_device)
-    log.info(
-        "clustering complete rolling news windows on device=%s "
-        "(similarity batch size=%d)",
-        device,
-        cfg.news.dedup_similarity_batch_size,
-    )
+    device = resolve_device(cfg.news.dedup_device) if cfg.news.dedup_enabled else None
+    if cfg.news.dedup_enabled:
+        log.info(
+            "clustering complete rolling news windows on device=%s "
+            "(similarity batch size=%d)",
+            device,
+            cfg.news.dedup_similarity_batch_size,
+        )
     rows: list[dict] = []
     total_representatives = 0
     grouped = list(df.groupby("asset", sort=True))
@@ -272,17 +290,25 @@ def _aggregate_selection_windows(
                 pbar.update(1)
                 pbar.set_postfix_str(f"asset={asset}")
                 start = date - lookback
+                # Strictly lag the branch: at decision day t, only use effective
+                # news dates t-lookback through t-1.  In particular, no score from
+                # t can enter the model, even if upstream same-day normalization
+                # touched a story published after the market close.
                 window = asset_df[
-                    (asset_df["date"] > start) & (asset_df["date"] <= date)
+                    (asset_df["date"] >= start) & (asset_df["date"] < date)
                 ]
                 if window.empty:
                     continue
-                mean_sent, n_articles = _representative_window_features(
-                    window,
-                    embedding_by_text,
-                    cfg,
-                    device,
-                )
+                if cfg.news.dedup_enabled:
+                    mean_sent, n_articles = _representative_window_features(
+                        window,
+                        embedding_by_text,
+                        cfg,
+                        device,
+                    )
+                else:
+                    scores = window["sentiment_final"].astype(float)
+                    mean_sent, n_articles = float(scores.mean()), int(len(scores))
                 total_representatives += n_articles
                 rows.append(
                     {
@@ -293,10 +319,14 @@ def _aggregate_selection_windows(
                     }
                 )
 
+    selection_mode = (
+        "centroid representatives" if cfg.news.dedup_enabled else "articles"
+    )
     log.info(
-        "news deduplication used %d centroid representatives across %d "
-        "asset-day selection windows from %d articles (lookback=%d days)",
+        "news selection used %d %s across %d strictly lagged asset-day windows "
+        "from %d articles (lookback=%d days)",
         total_representatives,
+        selection_mode,
         len(rows),
         len(df),
         cfg.news.dedup_lookback_days,
@@ -323,9 +353,19 @@ def build_news_features(
     """Return a dense long frame ``[asset, date, *NEWS_FEATURES]`` covering every
     (asset, trading_day) — including no-news days.
 
-    News published on calendar day ``d`` is attributed to trading day ``d`` (known by
-    that session's close); news on a non-trading day rolls forward to the next session
-    so nothing is dropped, and nothing leaks backward."""
+    An article is attributed to the first trading session that could actually have
+    *acted* on it. Decisions are taken at the close, so an article published at or
+    before that session's close lands on that day; one published after it — an
+    evening wire, an overnight release, anything on a weekend or holiday — rolls
+    forward to the next session. The feature window then excludes that landing day,
+    using only the preceding calendar-month window. Nothing is dropped, and nothing
+    leaks backward.
+
+    The cutoff matters: simply truncating the timestamp to its calendar date, as an
+    earlier version did, attributes a 9pm earnings release to a session that closed
+    five hours earlier. That is a genuine look-ahead — the model trains on
+    information the strategy could not have traded — and on this feed it affects
+    roughly one article in seven."""
     df = news.copy()
     if "summary_text" not in df.columns:
         df["summary_text"] = ""
@@ -339,8 +379,8 @@ def build_news_features(
             "zero. Check that the sentiment file's symbols overlap the price file's "
             "and that its publication dates overlap the trading calendar."
         )
-    cal_day = pd.DatetimeIndex(df["ts"].dt.normalize())
-    # Snap each article to the first trading day >= its calendar day.
+    cal_day = _effective_publication_day(df["ts"], cfg)
+    # Snap each article to the first trading day >= the day it was actionable.
     pos = trading_days.searchsorted(cal_day, side="left")
     valid = pos < len(trading_days)
     if len(df) and not valid.any():

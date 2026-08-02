@@ -205,6 +205,15 @@ class NewsFeatureConfig:
             "TYCHE_PORTFOLIO_NEWS_DEDUP_SIMILARITY_BATCH_SIZE", 1_024, int
         )
     )
+    # Session close in UTC hours. An article published after this cannot inform a
+    # decision taken at that close, so it rolls to the next session — without this
+    # an evening release leaks into the day it was published. 20:00 UTC is 16:00
+    # America/New_York in winter; erring early only ever delays an article.
+    cutoff_utc_hour: float = field(
+        default_factory=lambda: _env(
+            "TYCHE_PORTFOLIO_NEWS_CUTOFF_UTC_HOUR", 20.0, float
+        )
+    )
 
 
 @dataclass(frozen=True)
