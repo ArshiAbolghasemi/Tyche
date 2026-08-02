@@ -6,7 +6,7 @@
 # scores come out silently permuted.
 
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 TYCHE_SENTIMENT_BACKENDS=finbert_minilm \
 TYCHE_SENTIMENT_FINBERT_MINILM_NAME="${TYCHE_SENTIMENT_FINBERT_MINILM_NAME:-}" \

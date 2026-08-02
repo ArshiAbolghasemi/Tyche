@@ -5,7 +5,7 @@
 # this is a local batched classifier, not concurrent HTTP calls).
 
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 TYCHE_SENTIMENT_BACKENDS=finbert \
 TYCHE_SENTIMENT_FINBERT_DEVICE=auto \

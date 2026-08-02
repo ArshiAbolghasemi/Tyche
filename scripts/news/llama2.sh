@@ -5,7 +5,7 @@
 #   docker compose -f docker-compose.sentiment-llms.yml up -d llama2
 
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 TYCHE_SENTIMENT_BACKENDS=llama2_13b_chat \
 TYCHE_SENTIMENT_LLAMA2_MAX_WORKERS=64 \

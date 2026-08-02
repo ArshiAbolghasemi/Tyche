@@ -5,7 +5,7 @@
 #   docker compose -f docker-compose.sentiment-llms.yml up -d mistral
 
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 TYCHE_SENTIMENT_BACKENDS=mistral_7b_instruct \
 TYCHE_SENTIMENT_MISTRAL_MAX_WORKERS=64 \
