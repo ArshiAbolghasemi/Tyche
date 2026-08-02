@@ -29,6 +29,10 @@ services:
 
     volumes:
       - hf-cache:/root/.cache/huggingface
+      # Chat templates: the AWQ repos ship tokenizers with no chat_template, and
+      # transformers >= 4.44 refuses to fall back to a default one — without this
+      # every /v1/chat/completions request 400s.
+      - ./docker/chat-templates:/chat-templates:ro
 
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
@@ -38,6 +42,7 @@ services:
     command:
       - "${MISTRAL_MODEL:-TheBloke/Mistral-7B-Instruct-v0.2-AWQ}"
       - "--served-model-name=mistral-7b-instruct"
+      - "--chat-template=/chat-templates/mistral-instruct.jinja"
       - "--quantization=awq"
       - "--dtype=bfloat16"
       - "--gpu-memory-utilization=${MISTRAL_GPU_MEMORY_UTILIZATION:-0.45}"
@@ -82,6 +87,10 @@ services:
 
     volumes:
       - hf-cache:/root/.cache/huggingface
+      # Chat templates: the AWQ repos ship tokenizers with no chat_template, and
+      # transformers >= 4.44 refuses to fall back to a default one — without this
+      # every /v1/chat/completions request 400s.
+      - ./docker/chat-templates:/chat-templates:ro
 
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
@@ -89,6 +98,7 @@ services:
     command:
       - "${LLAMA2_MODEL:-TheBloke/Llama-2-13B-chat-AWQ}"
       - "--served-model-name=llama2-13b-chat"
+      - "--chat-template=/chat-templates/llama-2-chat.jinja"
       - "--quantization=awq"
       - "--dtype=bfloat16"
       - "--gpu-memory-utilization=${LLAMA2_GPU_MEMORY_UTILIZATION:-0.45}"

@@ -118,7 +118,24 @@ Notes before you start them:
 - Both services default to GPU 0. Put them on separate GPUs (or start only one
   at a time) with `MISTRAL_GPU_DEVICE` / `LLAMA2_GPU_DEVICE`.
 - Override the checkpoint with `MISTRAL_MODEL` / `LLAMA2_MODEL` if you prefer a
-  different quantization.
+  different quantization. If you do, check whether that repo's tokenizer defines
+  a `chat_template` — see below.
+- Both services are started with an explicit `--chat-template` from
+  `docker/chat-templates/`. The AWQ repos ship tokenizers with no chat template
+  of their own, and transformers ≥ 4.44 refuses to fall back to a default, so
+  without it every request fails with:
+
+  ```
+  BadRequestError: 400 — As of transformers v4.44, default chat template is no
+  longer allowed, so you must provide a chat template if the tokenizer does not
+  define one.
+  ```
+
+  The templates encode each model's fine-tuned prompt format (Llama-2's
+  `[INST] <<SYS>>…<</SYS>>` block; Mistral's `[INST] …` with the system turn
+  folded into the first user turn, since it has no dedicated system role).
+  Getting this wrong does not error — it silently degrades output quality, so
+  keep the template matched to the checkpoint you serve.
 
 Once a server is healthy, confirm Tyche can reach it before a real run:
 
