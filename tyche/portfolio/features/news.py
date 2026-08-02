@@ -27,6 +27,7 @@ from tyche.common.device import resolve_device
 from tyche.common.logging import get_logger
 from tyche.news.service.embedder import embed_texts
 from tyche.portfolio.config import Config
+from tyche.portfolio.data.universe import UNIVERSE
 
 log = get_logger(__name__)
 
@@ -217,6 +218,24 @@ def _representative_window_features(
     return float(scores.mean()), int(len(scores))
 
 
+def _empty_aggregate(trading_days: pd.DatetimeIndex) -> pd.DataFrame:
+    """An empty aggregate whose ``date`` dtype matches the trading-day index.
+
+    ``pd.DataFrame(columns=[...])`` would give every column ``object`` dtype, and
+    merging an object ``date`` against the tz-aware datetimes in the dense grid
+    raises rather than yielding an empty join. Typing the columns here keeps the
+    no-news case on the normal path, where it lands as all-zero news features.
+    """
+    return pd.DataFrame(
+        {
+            "asset": pd.Series(dtype="object"),
+            "date": pd.Series(dtype=trading_days.dtype),
+            "mean_sent": pd.Series(dtype="float64"),
+            "n_articles": pd.Series(dtype="int64"),
+        }
+    )
+
+
 def _aggregate_selection_windows(
     df: pd.DataFrame,
     trading_days: pd.DatetimeIndex,
@@ -224,7 +243,7 @@ def _aggregate_selection_windows(
 ) -> pd.DataFrame:
     """Aggregate representative stories from the trailing selection window."""
     if df.empty:
-        return pd.DataFrame(columns=["asset", "date", "mean_sent", "n_articles"])
+        return _empty_aggregate(trading_days)
 
     if not cfg.news.dedup_enabled:
         return _aggregate(df)
@@ -283,6 +302,9 @@ def _aggregate_selection_windows(
         len(df),
         cfg.news.dedup_lookback_days,
     )
+    if not rows:
+        # Every selection window came back empty; same dtype care as above.
+        return _empty_aggregate(trading_days)
     return pd.DataFrame(rows, columns=["asset", "date", "mean_sent", "n_articles"])
 
 
@@ -308,10 +330,28 @@ def build_news_features(
     df = news.copy()
     if "summary_text" not in df.columns:
         df["summary_text"] = ""
+    if df.empty:
+        # Not fatal — the branch degrades to all-zero news features — but it is
+        # almost always a universe/date mismatch between the sentiment file and the
+        # price data rather than a genuinely news-free period, and silently training
+        # on a dead branch is worse than a noisy log.
+        log.warning(
+            "no news rows for the price universe — every news feature will be zero. "
+            "Check that the sentiment file's tickers overlap the price universe (%s) "
+            "and that its publication dates overlap the trading calendar.",
+            ", ".join(UNIVERSE),
+        )
     cal_day = pd.DatetimeIndex(df["ts"].dt.normalize())
     # Snap each article to the first trading day >= its calendar day.
     pos = trading_days.searchsorted(cal_day, side="left")
     valid = pos < len(trading_days)
+    if len(df) and not valid.any():
+        log.warning(
+            "all %d news rows fall after the last trading day (%s) — every news "
+            "feature will be zero",
+            len(df),
+            trading_days[-1].date() if len(trading_days) else "n/a",
+        )
     df = df[valid].copy()
     df["date"] = trading_days[pos[valid]]
 
