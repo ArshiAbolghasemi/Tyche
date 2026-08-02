@@ -1,9 +1,13 @@
-"""Align the three feature branches into dense, index-matched arrays.
+"""Align the two feature branches into dense, index-matched arrays.
 
 Everything is keyed on ``(asset, trading_day)`` in a fixed asset order and the
 shared trading-day index, so a slice ``[:, t-T+1:t+1]`` is a synchronized lookback
-window across all branches and assets. The forward H-day log return (from daily
-adjusted close) is the supervised target.
+window across both branches and every asset. The forward H-day log return (from
+daily adjusted close) is the supervised target.
+
+The universe is resolved from the data here (see ``data.universe``) rather than
+hard-coded, so the arrays are sized by whatever the price and news feeds actually
+support.
 """
 
 from __future__ import annotations
@@ -16,10 +20,9 @@ import pandas as pd
 from tyche.portfolio.config import Config
 from tyche.portfolio.data.calendar import trading_days as _trading_days
 from tyche.portfolio.features.daily import build_daily_features, DAILY_FEATURES
-from tyche.portfolio.features.intraday import build_intraday_tensor, INTRADAY_FEATURES
 from tyche.portfolio.features.news import build_news_features, NEWS_FEATURES
-from tyche.portfolio.data.loaders import load_daily, load_intraday, load_news_sentiment
-from tyche.portfolio.data.universe import UNIVERSE
+from tyche.portfolio.data.loaders import load_daily, load_news_sentiment
+from tyche.portfolio.data.universe import resolve_universe
 
 
 @dataclass
@@ -28,11 +31,9 @@ class AlignedData:
     days: pd.DatetimeIndex  # length D
     daily: np.ndarray  # [A, D, Fd]
     news: np.ndarray  # [A, D, Fn]
-    intraday: np.ndarray  # [A, D, B, Fi]
     adj_close: np.ndarray  # [A, D]
     daily_names: list[str]
     news_names: list[str]
-    intraday_names: list[str]
 
     @property
     def n_assets(self) -> int:
@@ -57,25 +58,18 @@ def _pivot(
 
 def assemble(cfg: Config) -> AlignedData:
     daily_raw = load_daily(cfg)
-    days = _trading_days(daily_raw)
-    assets = UNIVERSE
+    news_raw = load_news_sentiment(cfg)
+
+    assets = resolve_universe(daily_raw, set(news_raw["asset"].unique()), cfg.universe)
+    daily_raw = daily_raw[daily_raw["asset"].isin(assets)].reset_index(drop=True)
+    news_raw = news_raw[news_raw["asset"].isin(assets)].reset_index(drop=True)
+    days = _trading_days(daily_raw, assets)
 
     daily_long = build_daily_features(daily_raw, cfg)
-    news_long = build_news_features(load_news_sentiment(cfg), days, cfg)
-    intra_tensor, intra_idx = build_intraday_tensor(load_intraday(cfg), cfg)
+    news_long = build_news_features(news_raw, days, cfg)
 
     daily = _pivot(daily_long, DAILY_FEATURES, days, assets)
     news = _pivot(news_long, NEWS_FEATURES, days, assets)
-
-    # Intraday: scatter the (asset-day, bars, feat) tensor into [A, D, B, Fi].
-    B, Fi = intra_tensor.shape[1], intra_tensor.shape[2]
-    intraday = np.zeros((len(assets), len(days), B, Fi), dtype=np.float32)
-    asset_pos = {a: i for i, a in enumerate(assets)}
-    day_pos = {d: i for i, d in enumerate(days)}
-    for (asset, date), row in intra_idx.items():
-        ai, di = asset_pos.get(asset), day_pos.get(pd.Timestamp(date))
-        if ai is not None and di is not None:
-            intraday[ai, di] = intra_tensor[row]
 
     # Adjusted close aligned [A, D] for the forward-return target.
     adj = daily_raw.pivot(index="date", columns="asset", values="adj_close").reindex(
@@ -88,9 +82,7 @@ def assemble(cfg: Config) -> AlignedData:
         days=days,
         daily=daily,
         news=news,
-        intraday=intraday,
         adj_close=adj_close,
         daily_names=DAILY_FEATURES,
         news_names=NEWS_FEATURES,
-        intraday_names=INTRADAY_FEATURES,
     )

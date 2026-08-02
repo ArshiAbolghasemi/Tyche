@@ -2,7 +2,7 @@
 
 A multimodal deep-learning model that predicts the distribution of forward
 `H`-day cross-asset log returns — a mean vector and a full covariance matrix —
-from the three aligned feature branches described in
+from the two aligned feature branches described in
 [Data & Features](data-features.md).
 
 ## Architecture (`tyche/portfolio/model/network.py`)
@@ -11,12 +11,10 @@ from the three aligned feature branches described in
 flowchart TB
     subgraph branches["Per-day branch encoders (per asset)"]
         daily["Daily OHLCV<br/>SequenceConvEncoder"]
-        intraday["Intraday OHLCV<br/>IntradayDayEncoder"]
         news["News sentiment<br/>SequenceConvEncoder"]
     end
 
     daily --> concat["Concat → one multimodal<br/>vector per lookback day"]
-    intraday --> concat
     news --> concat
 
     concat --> seq["Sequence encoder<br/>LSTM or attention"]
@@ -34,19 +32,17 @@ flowchart TB
     sigmaE --> total
 ```
 
-Per asset, three branch encoders (`tyche/portfolio/model/encoders.py`) each
+Per asset, two branch encoders (`tyche/portfolio/model/encoders.py`) each
 produce a per-day embedding sequence:
 
 - `SequenceConvEncoder` — one-to-two Conv1D + GELU + norm + dropout layers,
   turning a `[.., T, F]` daily feature sequence into `[.., T, C]` per-day
-  embeddings (used for the daily and news branches).
-- `IntradayDayEncoder` — collapses a day's intraday bars `[.., B, F]` into one
-  daily embedding `[.., C]` via convolution plus temporal pooling.
+  embeddings. Both branches use it.
 
 The per-day embeddings across branches are concatenated into one multimodal
 vector per lookback day and run through a one-layer LSTM (or a light
 self-attention encoder, selected by `ModelConfig.sequence_encoder`). The
-`use_news` / `use_intraday` flags can drop a branch entirely for ablations
+`use_news` flag can drop the news branch entirely for ablations
 without touching any other wiring.
 
 The final asset embeddings feed two heads:

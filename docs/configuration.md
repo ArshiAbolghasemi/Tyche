@@ -52,7 +52,7 @@ with defaults):
 | Paths | `Paths` | `TYCHE_PORTFOLIO_PATHS_*` | Source parquet locations, artifacts root (`benchmark/`, split per target distribution), news-embedding cache |
 | Split | `SplitConfig` | `TYCHE_PORTFOLIO_SPLIT_*` | Chronological in-sample/test date ranges, train fraction |
 | Window | `WindowConfig` | `TYCHE_PORTFOLIO_WINDOW_*` | Lookback length `T`, holding/horizon `H`, embargo |
-| Intraday | `IntradayConfig` | `TYCHE_PORTFOLIO_INTRADAY_*` | Resample frequency, session bounds, max bars/day |
+| Universe | `UniverseConfig` | `TYCHE_PORTFOLIO_UNIVERSE_*` | Cross-section size cap, full-history requirement, liquidity floor, explicit symbol list |
 | Daily features | `DailyFeatureConfig` | `TYCHE_PORTFOLIO_DAILY_*` | Rolling windows for volatility/momentum/RSI/ATR/z-score |
 | News features | `NewsFeatureConfig` | `TYCHE_PORTFOLIO_NEWS_*` | Story-clustering lookback, similarity threshold, device, batch size |
 | Model | `ModelConfig` | `TYCHE_PORTFOLIO_MODEL_*` | Conv channels/kernel, dropout, hidden dim, covariance rank/eps, sequence encoder choice |

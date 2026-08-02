@@ -1,14 +1,14 @@
 """The multimodal return-distribution model.
 
-Per asset, the three branch encoders produce a per-day embedding sequence; these are
+Per asset, the two branch encoders produce a per-day embedding sequence; these are
 concatenated into one multimodal vector per lookback day and run through a one-layer
 LSTM (or a light self-attention encoder). The final asset embeddings feed two heads:
 a mean head predicting mu in R^N, and an aleatoric-covariance head predicting a valid
 Sigma_A = L L^T + diag(d) via a low-rank-plus-diagonal parameterization. At inference,
 MC dropout turns repeated mean-head outputs into epistemic covariance Sigma_E.
 
-The ``use_news`` / ``use_intraday`` flags drop a branch for ablations without changing
-any other wiring.
+The ``use_news`` flag drops the news branch for ablations without changing any other
+wiring.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from tyche.portfolio.config import ModelConfig
-from tyche.portfolio.model.encoders import IntradayDayEncoder, SequenceConvEncoder
+from tyche.portfolio.model.encoders import SequenceConvEncoder
 
 
 @dataclass
@@ -41,15 +41,12 @@ class MultimodalReturnModel(nn.Module):
         n_assets: int,
         daily_features: int,
         news_features: int,
-        intraday_features: int,
         cfg: ModelConfig,
         use_news: bool = True,
-        use_intraday: bool = True,
     ):
         super().__init__()
         self.n_assets = n_assets
         self.use_news = use_news
-        self.use_intraday = use_intraday
         self.cov_eps = cfg.cov_eps
         self.cov_rank = cfg.cov_rank
         c, k, do = cfg.conv_channels, cfg.kernel_size, cfg.dropout
@@ -59,9 +56,6 @@ class MultimodalReturnModel(nn.Module):
         if use_news:
             self.news_enc = SequenceConvEncoder(news_features, c, k, do)
             fused += self.news_enc.out_dim
-        if use_intraday:
-            self.intraday_enc = IntradayDayEncoder(intraday_features, c, k, do)
-            fused += self.intraday_enc.out_dim
 
         h = cfg.hidden_dim
         self.sequence_kind = cfg.sequence_encoder
@@ -86,13 +80,11 @@ class MultimodalReturnModel(nn.Module):
         self.factor_head = nn.Linear(h, cfg.cov_rank)
         self.diag_head = nn.Linear(h, 1)
 
-    def _asset_embeddings(self, daily, news, intraday) -> torch.Tensor:
+    def _asset_embeddings(self, daily, news) -> torch.Tensor:
         b, n, t = daily.shape[0], daily.shape[1], daily.shape[2]
         parts = [self.daily_enc(daily)]  # [B, N, T, C]
         if self.use_news:
             parts.append(self.news_enc(news))
-        if self.use_intraday:
-            parts.append(self.intraday_enc(intraday))  # [B, N, T, C]
         fused = torch.cat(parts, dim=-1)  # [B, N, T, Cf]
 
         seq = fused.reshape(b * n, t, fused.shape[-1])
@@ -104,8 +96,8 @@ class MultimodalReturnModel(nn.Module):
             last = hn[-1]  # [B*N, H]
         return last.reshape(b, n, -1)  # [B, N, H]
 
-    def forward(self, daily, news, intraday) -> Prediction:
-        emb = self._asset_embeddings(daily, news, intraday)  # [B, N, H]
+    def forward(self, daily, news) -> Prediction:
+        emb = self._asset_embeddings(daily, news)  # [B, N, H]
         b, n = emb.shape[0], emb.shape[1]
 
         stochastic_emb = self.head_dropout(emb)

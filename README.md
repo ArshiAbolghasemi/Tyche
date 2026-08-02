@@ -8,7 +8,7 @@ data into backtested portfolio allocations.
    neutralizes systematic bias to produce a clean per-(article, ticker) sentiment
    contract.
 2. **Portfolio construction** — a multimodal deep-learning model fuses daily
-   OHLCV, intraday OHLCV, and news-sentiment features into a predicted
+   OHLCV and news-sentiment features into a predicted
    uncertainty-aware return distribution (mean plus aleatoric and epistemic covariance)
    per rebalance date. Gaussian and Student-$t$ models train solely with their
    distributional negative log-likelihood; MC dropout estimates model uncertainty at

@@ -88,9 +88,7 @@ def _mc_predict_batch(
     """
     if samples < 1:
         raise ValueError("mc_dropout_samples must be at least 1")
-    stochastic = [
-        model(batch["daily"], batch["news"], batch["intraday"]) for _ in range(samples)
-    ]
+    stochastic = [model(batch["daily"], batch["news"]) for _ in range(samples)]
     mus = torch.stack([pred.mu for pred in stochastic], dim=0)
     aleatoric = torch.stack([pred.aleatoric_cov for pred in stochastic], dim=0).mean(
         dim=0
@@ -128,7 +126,7 @@ def predict(
         inputs = {
             key: value.to(resolved_device)
             for key, value in batch.items()
-            if key in {"daily", "news", "intraday"}
+            if key in {"daily", "news"}
         }
         mu, aleatoric_cov, cov = _mc_predict_batch(model, inputs, mc_dropout_samples)
         mus.append(mu.cpu().numpy())

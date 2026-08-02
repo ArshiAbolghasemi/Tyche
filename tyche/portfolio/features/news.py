@@ -27,7 +27,6 @@ from tyche.common.device import resolve_device
 from tyche.common.logging import get_logger
 from tyche.news.service.embedder import embed_texts
 from tyche.portfolio.config import Config
-from tyche.portfolio.data.universe import UNIVERSE
 
 log = get_logger(__name__)
 
@@ -336,10 +335,9 @@ def build_news_features(
         # price data rather than a genuinely news-free period, and silently training
         # on a dead branch is worse than a noisy log.
         log.warning(
-            "no news rows for the price universe — every news feature will be zero. "
-            "Check that the sentiment file's tickers overlap the price universe (%s) "
-            "and that its publication dates overlap the trading calendar.",
-            ", ".join(UNIVERSE),
+            "no news rows for the resolved universe — every news feature will be "
+            "zero. Check that the sentiment file's symbols overlap the price file's "
+            "and that its publication dates overlap the trading calendar."
         )
     cal_day = pd.DatetimeIndex(df["ts"].dt.normalize())
     # Snap each article to the first trading day >= its calendar day.

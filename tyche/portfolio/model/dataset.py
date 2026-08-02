@@ -1,7 +1,7 @@
 """Torch dataset over windowed cross-sectional samples.
 
-Each item is one decision day: synchronized ``[N, T, ...]`` lookback tensors for the
-three branches plus the ``[N]`` forward-return target. Tensors are sliced lazily from
+Each item is one decision day: synchronized ``[N, T, ...]`` lookback tensors for both
+branches plus the ``[N]`` forward-return target. Tensors are sliced lazily from
 the (already standardized) aligned arrays, so memory stays flat regardless of sample
 count.
 """
@@ -30,9 +30,6 @@ class WindowDataset(Dataset):
         return {
             "daily": torch.from_numpy(np.ascontiguousarray(self.data.daily[:, sl])),
             "news": torch.from_numpy(np.ascontiguousarray(self.data.news[:, sl])),
-            "intraday": torch.from_numpy(
-                np.ascontiguousarray(self.data.intraday[:, sl])
-            ),
             "target": torch.from_numpy(s.target),
             "t": torch.tensor(s.t),
         }

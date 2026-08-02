@@ -54,15 +54,13 @@ class TrainResult:
     history: list[dict]
 
 
-def build_model(data: AlignedData, cfg: Config, use_news=True, use_intraday=True):
+def build_model(data: AlignedData, cfg: Config, use_news=True):
     return MultimodalReturnModel(
         n_assets=data.n_assets,
         daily_features=len(data.daily_names),
         news_features=len(data.news_names),
-        intraday_features=len(data.intraday_names),
         cfg=cfg.model,
         use_news=use_news,
-        use_intraday=use_intraday,
     )
 
 
@@ -104,7 +102,7 @@ def _evaluate(model, loader, device, cfg: Config) -> tuple[float, dict[str, floa
     running: dict[str, float] = {}
     for batch in loader:
         batch = _move(batch, device)
-        pred = model(batch["daily"], batch["news"], batch["intraday"])
+        pred = model(batch["daily"], batch["news"])
         size = len(batch["target"])
         total += (
             distribution_nll(
@@ -143,14 +141,13 @@ def train_model(
     val_samples: list[Sample],
     cfg: Config,
     use_news=True,
-    use_intraday=True,
     tag: str = "model",
 ) -> TrainResult:
     torch.manual_seed(cfg.train.seed)
     np.random.seed(cfg.train.seed)
     device = resolve_device(cfg.train.device)
 
-    model = build_model(data, cfg, use_news, use_intraday).to(device)
+    model = build_model(data, cfg, use_news).to(device)
     opt = torch.optim.AdamW(
         model.parameters(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay
     )
@@ -183,7 +180,7 @@ def train_model(
         for batch in train_loader:
             batch = _move(batch, device)
             opt.zero_grad()
-            pred = model(batch["daily"], batch["news"], batch["intraday"])
+            pred = model(batch["daily"], batch["news"])
             loss = distribution_nll(
                 pred,
                 batch["target"],

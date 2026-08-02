@@ -58,13 +58,7 @@ class Paths:
     )
     daily_ohlcv: Path = field(
         default_factory=lambda: _env_path(
-            "TYCHE_PORTFOLIO_PATHS_DAILY_OHLCV", "data/eodhd/daily_ohclv.parquet"
-        )
-    )
-    intraday_ohlcv: Path = field(
-        default_factory=lambda: _env_path(
-            "TYCHE_PORTFOLIO_PATHS_INTRADAY_OHLCV",
-            "data/eodhd/intraday_ohclv.parquet",
+            "TYCHE_PORTFOLIO_PATHS_DAILY_OHLCV", "data/rl2k/ohlcv.parquet"
         )
     )
     # Portfolio-run and model-training artifacts; ``Config.artifacts_dir`` appends the
@@ -130,20 +124,37 @@ class WindowConfig:
 
 
 @dataclass(frozen=True)
-class IntradayConfig:
-    resample: str = field(  # 5min | 15min | 30min
-        default_factory=lambda: _env("TYCHE_PORTFOLIO_INTRADAY_RESAMPLE", "15min")
+class UniverseConfig:
+    """Which assets the cross-section is built from.
+
+    The price file covers ~1.6k Russell 2000 constituents, but the model predicts a
+    full ``N x N`` covariance and Choleskys it every forward pass. At N=1584 one
+    batch's covariance tensor is ~320 MB and the factorization is O(N^3) — not
+    runnable. So the universe is capped at the ``size`` most liquid names that have
+    both complete price history and news coverage. Raise it as far as the hardware
+    allows; the selection is deterministic given the data.
+    """
+
+    size: int = field(
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_UNIVERSE_SIZE", 50, int)
     )
-    session_start: str = field(
-        default_factory=lambda: _env("TYCHE_PORTFOLIO_INTRADAY_SESSION_START", "09:30")
-    )
-    session_end: str = field(
-        default_factory=lambda: _env("TYCHE_PORTFOLIO_INTRADAY_SESSION_END", "16:00")
-    )
-    max_bars_per_day: int = field(  # 6.5h / 15min ~ 26 regular bars (+slack)
+    # Require a complete price series over the sample. A ragged panel would make the
+    # cross-sectional covariance depend on which names happen to exist that day.
+    require_full_history: bool = field(
         default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_INTRADAY_MAX_BARS_PER_DAY", 27, int
+            "TYCHE_PORTFOLIO_UNIVERSE_REQUIRE_FULL_HISTORY", True, bool
         )
+    )
+    # Drop names below this median dollar volume before ranking.
+    min_dollar_volume: float = field(
+        default_factory=lambda: _env(
+            "TYCHE_PORTFOLIO_UNIVERSE_MIN_DOLLAR_VOLUME", 0.0, float
+        )
+    )
+    # Optional explicit override: a comma-separated symbol list that bypasses the
+    # liquidity ranking entirely (still intersected with what the data supports).
+    symbols: list[str] = field(
+        default_factory=lambda: _env_list("TYCHE_PORTFOLIO_UNIVERSE_SYMBOLS", [])
     )
 
 
@@ -336,7 +347,7 @@ class Config:
     paths: Paths = field(default_factory=Paths)
     split: SplitConfig = field(default_factory=SplitConfig)
     window: WindowConfig = field(default_factory=WindowConfig)
-    intraday: IntradayConfig = field(default_factory=IntradayConfig)
+    universe: UniverseConfig = field(default_factory=UniverseConfig)
     daily: DailyFeatureConfig = field(default_factory=DailyFeatureConfig)
     news: NewsFeatureConfig = field(default_factory=NewsFeatureConfig)
     model: ModelConfig = field(default_factory=ModelConfig)

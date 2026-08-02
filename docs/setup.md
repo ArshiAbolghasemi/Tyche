@@ -59,8 +59,7 @@ committed to git.
 uv run dvc pull
 ```
 
-This retrieves the EODHD daily/intraday OHLCV parquet files, the news parquet
-sources, and (optionally) the tracked benchmark CSV/`.npz` outputs used for
+This retrieves the daily OHLCV parquet, the news parquet sources, and (optionally) the tracked benchmark CSV/`.npz` outputs used for
 report generation.
 
 ## 4. Serve the sentiment models you want to test
