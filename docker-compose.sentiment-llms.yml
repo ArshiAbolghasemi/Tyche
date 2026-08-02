@@ -44,6 +44,8 @@ services:
       # Grammar-constrained JSON output (tyche's structured-output request) works
       # on any base model, unlike OpenAI-style tool-calling — see llama2 below.
       - --guided-decoding-backend=outlines
+      - --gpu-memory-utilization=0.7  # Lower this to 0.7 or 0.8 if needed
+      - --max-num-seqs=32              # Limit parallel request state size
       - --max-model-len=8192
       - --host=0.0.0.0
       - --port=8000
@@ -83,6 +85,8 @@ services:
       # OpenAI-style tool calls — this backend enforces the schema at the token
       # level regardless of the model's own fine-tuning, so it works here too.
       - --guided-decoding-backend=outlines
+      - --gpu-memory-utilization=0.7  # Lower this to 0.7 or 0.8 if needed
+      - --max-num-seqs=32              # Limit parallel request state size
       - --max-model-len=4096
       - --host=0.0.0.0
       - --port=8000
