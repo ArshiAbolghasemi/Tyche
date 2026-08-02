@@ -112,17 +112,20 @@ def bayesian_black_litterman_posterior(
 def black_litterman_weights(
     posterior_mean: np.ndarray, posterior_cov: np.ndarray, cfg: PortfolioConfig
 ) -> np.ndarray:
-    """Closed-form BL weights ``w = (delta Sigma)^-1 mu``, normalized to sum to one.
+    """Closed-form BL weights ``w = (delta Sigma)^-1 mu``, fully invested.
 
     Solved rather than inverted, falling back to least squares on a singular system —
     with five correlated mega-caps the posterior covariance is routinely close to
     singular, which is exactly why this allocation swings hard on small changes in
     ``mu``.
 
-    Normalizing by ``sum(w)`` is the standard convention but is unsafe when the raw
-    weights sum to nearly zero: the book blows up, and a negative sum silently flips
-    every position's sign. Both cases fall back to equal weight and are logged instead
-    of being propagated into the backtest."""
+    When the raw solution has a positive net exposure, standard net normalization is
+    appropriate. A zero or negative net exposure is valid for an unconstrained BL
+    portfolio, but dividing by that net exposure would either create unbounded
+    leverage or reverse every position. In that case, retain the BL long/short signal
+    as a unit-gross tilt and add the balancing equal-weight allocation needed to make
+    the book fully invested. Only a non-finite or all-zero solution falls back to
+    equal weight."""
     n = len(posterior_mean)
     a = cfg.bl_risk_aversion * posterior_cov
     try:
@@ -131,9 +134,19 @@ def black_litterman_weights(
         raw = np.linalg.lstsq(a, posterior_mean, rcond=None)[0]
 
     total = float(raw.sum())
-    if not np.isfinite(total) or abs(total) < 1e-8 or total < 0:
+    gross = float(np.abs(raw).sum())
+    if not np.isfinite(raw).all() or not np.isfinite(gross) or gross < 1e-8:
         log.warning(
-            "direct BL weights sum to %.2e; falling back to equal weight", total
+            "direct BL weights have invalid gross exposure %.2e; falling back to equal weight",
+            gross,
         )
         return np.full(n, 1.0 / n)
-    return raw / total
+
+    if total > 1e-8:
+        return raw / total
+
+    # A market-neutral/net-short raw solution cannot be net-normalized without
+    # changing its sign. Keep its relative long/short exposures while restoring the
+    # fully-invested convention expected by the backtest.
+    tilt = raw / gross
+    return tilt + (1.0 - float(tilt.sum())) / n

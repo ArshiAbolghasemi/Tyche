@@ -36,7 +36,10 @@ heavily correlated.
 `BL`'s closed form (`w = (delta·Sigma)^-1 mu`) is the unconstrained
 mean-variance solution — there is nowhere in it to hang a long-only bound, a
 position cap, or a turnover penalty, so its weights may be short or levered
-before normalization.
+before normalization. If its net exposure is zero or negative, Tyche keeps the
+relative BL long/short signal as a unit-gross tilt and adds an equal-weight
+allocation to restore a fully invested portfolio; it never reverses the signal
+or silently replaces a valid net-short solution with equal weight.
 
 `MVO` (`tyche/portfolio/allocation/optimizer.py`) maximizes
 `mu^T w - (delta/2) w^T Sigma w` subject to long-only, fully-invested, and a
