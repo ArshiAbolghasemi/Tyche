@@ -1,64 +1,73 @@
-# Local OpenAI-compatible LLM servers for the mistral_7b_instruct / llama2_13b_chat
-# sentiment backends (tyche.news.service.sentiment). Each service is a vLLM
-# OpenAI-compatible server (https://github.com/vllm-project/vllm) serving an
-# AWQ-quantized checkpoint with bf16 compute, published on localhost — so Tyche's
-# LangChain ChatOpenAI client talks to it exactly the way the gpt4o_mini backend
-# talks to Azure OpenAI, just with `base_url` pointed here instead of Azure.
+# vLLM servers for mistral_7b_instruct and llama2_13b_chat.
 #
-# Requires an NVIDIA GPU + the NVIDIA Container Toolkit on the host.
-# meta-llama/Llama-2-13b-chat-hf (the base model the llama2 checkpoint below is
-# quantized from) is gated — accept its license on the Hub and set HF_TOKEN in the
-# repo-root .env before starting the llama2 service.
-#
-# Verify the model repos below still resolve on the Hub before relying on them —
-# override MISTRAL_MODEL / LLAMA2_MODEL if you land on a different quantization.
-#
-# Usage (run from the repo root, so the root .env's HF_TOKEN is picked up):
-#   docker compose -f docker-compose.sentiment-llms.yml up -d mistral   # only Mistral
-#   docker compose -f docker-compose.sentiment-llms.yml up -d llama2   # only Llama 2
-#   docker compose -f docker-compose.sentiment-llms.yml up -d          # both
+# Usage:
+#   docker compose -f docker-compose.sentiment-llms.yml up -d mistral
+#   docker compose -f docker-compose.sentiment-llms.yml up -d llama2
+#   docker compose -f docker-compose.sentiment-llms.yml up -d
 #   docker compose -f docker-compose.sentiment-llms.yml logs -f
 #   docker compose -f docker-compose.sentiment-llms.yml down
 #
-# Then point Tyche at them via .env:
+# Tyche configuration:
 #   TYCHE_SENTIMENT_MISTRAL_BASE_URL=http://localhost:8001/v1
+#   TYCHE_SENTIMENT_MISTRAL_MODEL=mistral-7b-instruct
+#
 #   TYCHE_SENTIMENT_LLAMA2_BASE_URL=http://localhost:8002/v1
+#   TYCHE_SENTIMENT_LLAMA2_MODEL=llama2-13b-chat
+#
+# Structured output:
+# Current vLLM versions support JSON-schema structured output through the
+# OpenAI-compatible request API. The removed
+# --guided-decoding-backend=outlines option is not needed.
 
 services:
   mistral:
     image: vllm/vllm-openai:latest
     container_name: tyche-sentiment-mistral
+
     ports:
       - "8001:8000"
+
     volumes:
       - hf-cache:/root/.cache/huggingface
+
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+
+    # The vllm-openai image already uses `vllm serve` as its entrypoint.
+    # Therefore, the model is passed as the first positional argument.
     command:
-      - --model=${MISTRAL_MODEL:-TheBloke/Mistral-7B-Instruct-v0.2-AWQ}
-      # Must match TYCHE_SENTIMENT_MISTRAL_MODEL so Tyche's client requests the
-      # right served model.
-      - --served-model-name=mistral-7b-instruct
-      - --quantization=awq
-      - --dtype=bfloat16
-      # Grammar-constrained JSON output (tyche's structured-output request) works
-      # on any base model, unlike OpenAI-style tool-calling — see llama2 below.
-      - --guided-decoding-backend=outlines
-      - --gpu-memory-utilization=0.7  # Lower this to 0.7 or 0.8 if needed
-      - --max-num-seqs=32              # Limit parallel request state size
-      - --max-model-len=8192
-      - --host=0.0.0.0
-      - --port=8000
+      - "${MISTRAL_MODEL:-TheBloke/Mistral-7B-Instruct-v0.2-AWQ}"
+      - "--served-model-name=mistral-7b-instruct"
+      - "--quantization=awq"
+      - "--dtype=bfloat16"
+      - "--gpu-memory-utilization=${MISTRAL_GPU_MEMORY_UTILIZATION:-0.45}"
+      - "--max-num-seqs=32"
+      - "--max-model-len=8192"
+      - "--host=0.0.0.0"
+      - "--port=8000"
+
+    ipc: host
+
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["${MISTRAL_GPU_DEVICE:-0}"]
-              capabilities: [gpu]
+              device_ids:
+                - "${MISTRAL_GPU_DEVICE:-0}"
+              capabilities:
+                - gpu
+
     restart: unless-stopped
+
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health')"]
+      test:
+        - CMD
+        - python3
+        - -c
+        - >
+          import urllib.request as u;
+          u.urlopen("http://localhost:8000/health", timeout=5)
       interval: 30s
       timeout: 10s
       retries: 5
@@ -67,45 +76,53 @@ services:
   llama2:
     image: vllm/vllm-openai:latest
     container_name: tyche-sentiment-llama2
+
     ports:
       - "8002:8000"
+
     volumes:
       - hf-cache:/root/.cache/huggingface
+
     environment:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+
     command:
-      - --model=${LLAMA2_MODEL:-TheBloke/Llama-2-13B-chat-AWQ}
-      # Must match TYCHE_SENTIMENT_LLAMA2_MODEL so Tyche's client requests the
-      # right served model.
-      - --served-model-name=llama2-13b-chat
-      - --quantization=awq
-      - --dtype=bfloat16
-      # Llama-2-chat has no native tool-calling (unlike Llama 3.1+), so structured
-      # output is requested via JSON-schema-constrained decoding instead of
-      # OpenAI-style tool calls — this backend enforces the schema at the token
-      # level regardless of the model's own fine-tuning, so it works here too.
-      - --guided-decoding-backend=outlines
-      - --gpu-memory-utilization=0.7  # Lower this to 0.7 or 0.8 if needed
-      - --max-num-seqs=32              # Limit parallel request state size
-      - --max-model-len=4096
-      - --host=0.0.0.0
-      - --port=8000
+      - "${LLAMA2_MODEL:-TheBloke/Llama-2-13B-chat-AWQ}"
+      - "--served-model-name=llama2-13b-chat"
+      - "--quantization=awq"
+      - "--dtype=bfloat16"
+      - "--gpu-memory-utilization=${LLAMA2_GPU_MEMORY_UTILIZATION:-0.45}"
+      - "--max-num-seqs=32"
+      - "--max-model-len=4096"
+      - "--host=0.0.0.0"
+      - "--port=8000"
+
+    ipc: host
+
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["${LLAMA2_GPU_DEVICE:-0}"]
-              capabilities: [gpu]
+              device_ids:
+                - "${LLAMA2_GPU_DEVICE:-0}"
+              capabilities:
+                - gpu
+
     restart: unless-stopped
+
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/health')"]
+      test:
+        - CMD
+        - python3
+        - -c
+        - >
+          import urllib.request as u;
+          u.urlopen("http://localhost:8000/health", timeout=5)
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 300s
 
 volumes:
-  # Shared HF cache so both services (and re-created containers) reuse downloaded
-  # weights instead of re-pulling multi-GB checkpoints.
   hf-cache:
