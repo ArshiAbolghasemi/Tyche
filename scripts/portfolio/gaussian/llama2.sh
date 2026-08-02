@@ -13,6 +13,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../../.."
 TYCHE_SENTIMENT_BACKENDS=llama2_13b_chat \
 TYCHE_PORTFOLIO_PATHS_NEWS_SENTIMENT=data/output/news_sentiment_llama2_13b_chat.parquet \
 TYCHE_PORTFOLIO_TRAIN_TARGET_DISTRIBUTION=gaussian \
+TYCHE_SENTIMENT_LLAMA2_MAX_WORKERS=32 \
   uv run python -m tyche.portfolio.run \
     --holdings 1 2 3 5 10 20 40 60 \
     --transaction-cost-bps 0 1 2 5 10 "$@"
