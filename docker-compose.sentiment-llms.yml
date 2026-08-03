@@ -50,6 +50,9 @@ services:
       - "--max-model-len=8192"
       - "--host=0.0.0.0"
       - "--port=8000"
+      # Prevent the JSON-schema decoder from repeatedly emitting legal whitespace
+      # instead of the next required token (notably after a JSON property name).
+      - '--structured-outputs-config={"backend":"xgrammar","disable_any_whitespace":true}'
 
     ipc: host
 
@@ -106,6 +109,9 @@ services:
       - "--max-model-len=4096"
       - "--host=0.0.0.0"
       - "--port=8000"
+      # Prevent the JSON-schema decoder from repeatedly emitting legal whitespace
+      # instead of the next required token (notably after a JSON property name).
+      - '--structured-outputs-config={"backend":"xgrammar","disable_any_whitespace":true}'
 
     ipc: host
 
