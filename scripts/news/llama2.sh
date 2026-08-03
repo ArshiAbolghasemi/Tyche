@@ -8,8 +8,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 TYCHE_SENTIMENT_BACKENDS=llama2_13b_chat \
-TYCHE_SENTIMENT_LLAMA2_MAX_WORKERS=64 \
-TYCHE_SENTIMENT_LLAMA2_MAX_WORKERS=32 \
+TYCHE_SENTIMENT_LLAMA2_MAX_WORKERS=16 \
 TYCHE_SENTIMENT_LLAMA2_TIMEOUT=300 \
   uv run python -m tyche.news.sentiment_pipeline run \
     --output data/output/news_sentiment_llama2_13b_chat.parquet "$@"
