@@ -124,7 +124,7 @@ class EmbeddingConfig:
     )
 
 
-_DEFAULT_SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT_BODY = """\
 You are a senior financial-markets sentiment analyst. You read a short summary of a \
 news item about a specific publicly-traded company or security and judge its likely \
 sentiment IMPACT ON THAT SECURITY from the perspective of an investor holding it.
@@ -151,10 +151,24 @@ mentions it in passing; the latter leans NEUTRAL.
 - Forward-looking guidance and analyst actions usually dominate backward-looking figures.
 - Be calibrated: reserve high confidence (>0.8 in one class) for unambiguous news; when \
 signals conflict or are weak, spread probability mass and lean NEUTRAL.
-- The three probabilities must be non-negative and sum to 1.
-- Provide a single concise sentence of rationale citing the key driver.
+- The three probabilities must be non-negative and sum to 1."""
 
-Respond ONLY via the structured schema you are given."""
+
+# The rationale is asked for only where the response schema has a field for it —
+# hosted models (see ``SentimentScores``). The local backends answer with the three
+# probabilities and nothing else (``SentimentProbabilities``), so asking them for a
+# justification would just invite output the schema forbids.
+_RATIONALE_GUIDELINE = (
+    "\n- Provide a single concise sentence of rationale citing the key driver."
+)
+_STRUCTURED_OUTPUT_GUIDELINE = (
+    "\n\nRespond ONLY via the structured schema you are given."
+)
+
+_DEFAULT_SYSTEM_PROMPT = (
+    _SYSTEM_PROMPT_BODY + _RATIONALE_GUIDELINE + _STRUCTURED_OUTPUT_GUIDELINE
+)
+_DEFAULT_LOCAL_SYSTEM_PROMPT = _SYSTEM_PROMPT_BODY + _STRUCTURED_OUTPUT_GUIDELINE
 
 
 # Llama-2-chat follows short, concrete classification instructions more reliably
@@ -213,6 +227,14 @@ class AzureSentimentConfig:
     )
     request_timeout: float = field(
         default_factory=lambda: _env("TYCHE_SENTIMENT_AZURE_TIMEOUT", 60.0, float)
+    )
+    # Hard cap on the response. A well-formed answer — the three probabilities plus
+    # a one-sentence rationale — runs to roughly 100 tokens, so this is ~5x headroom
+    # and never clips a real reply. The cap exists only to stop a model that never
+    # closes its JSON from generating until it hits the context window (see
+    # ChatCompletionsSentimentBackend._score_one).
+    max_tokens: int = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_AZURE_MAX_TOKENS", 512, int)
     )
     # Concurrent sentiment calls (thread pool; I/O bound). One call per unique summary
     # string, so this is the effective sentiment-throughput knob.
@@ -307,6 +329,14 @@ class Mistral7BInstructConfig:
     request_timeout: float = field(
         default_factory=lambda: _env("TYCHE_SENTIMENT_MISTRAL_TIMEOUT", 60.0, float)
     )
+    # See AzureSentimentConfig.max_tokens. This matters most for local servers:
+    # Ollama and vLLM both default to "generate until the context window is full",
+    # so a model that loops inside its JSON burns thousands of tokens per call. The
+    # local schema is the three probabilities alone (~40 tokens), so the cap is over
+    # 10x what a real answer needs — it is a circuit breaker, not a budget.
+    max_tokens: int = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_MISTRAL_MAX_TOKENS", 512, int)
+    )
     # Concurrent sentiment calls (thread pool; I/O bound) — same knob as Azure's.
     max_workers: int = field(
         default_factory=lambda: _env("TYCHE_SENTIMENT_MISTRAL_MAX_WORKERS", 8, int)
@@ -314,7 +344,7 @@ class Mistral7BInstructConfig:
     # The one fixed financial-sentiment system prompt sent with every scoring call.
     system_prompt: str = field(
         default_factory=lambda: _env(
-            "TYCHE_SENTIMENT_MISTRAL_SYSTEM_PROMPT", _DEFAULT_SYSTEM_PROMPT
+            "TYCHE_SENTIMENT_MISTRAL_SYSTEM_PROMPT", _DEFAULT_LOCAL_SYSTEM_PROMPT
         )
     )
 
@@ -347,6 +377,12 @@ class Llama2ChatConfig:
     )
     request_timeout: float = field(
         default_factory=lambda: _env("TYCHE_SENTIMENT_LLAMA2_TIMEOUT", 60.0, float)
+    )
+    # See Mistral7BInstructConfig.max_tokens. Llama-2-13B-chat is the model that was
+    # observed running on forever under greedy decoding, so the cap is what keeps a
+    # bad summary from costing a full context window of tokens.
+    max_tokens: int = field(
+        default_factory=lambda: _env("TYCHE_SENTIMENT_LLAMA2_MAX_TOKENS", 512, int)
     )
     max_workers: int = field(
         default_factory=lambda: _env("TYCHE_SENTIMENT_LLAMA2_MAX_WORKERS", 8, int)

@@ -5,18 +5,21 @@ Backends
 ``gpt4o_mini``
     Azure OpenAI ``gpt-4o-mini``.
 ``mistral_7b_instruct`` / ``llama2_13b_chat``
-    Local OpenAI-compatible chat endpoints (e.g. vLLM's OpenAI server serving a
-    quantized, bf16-compute checkpoint — see ``docker-compose.sentiment-llms.yml``
-    at the repo root).
+    Local OpenAI-compatible chat endpoints — Ollama, or vLLM's OpenAI server serving
+    a quantized, bf16-compute checkpoint (see ``docker-compose.sentiment-llms.yml``
+    at the repo root). Which one is in use is purely a matter of ``base_url`` and
+    ``model``.
 ``finbert``
     Local HF sequence-classification checkpoints (3-class pos/neg/neu head), loaded
     directly onto a local device (CPU/CUDA/MPS) — no API call, no prompt.
 
 The first three are all chat-completions backends and share one implementation
 (``ChatCompletionsSentimentBackend``): a fixed system prompt plus the summary, sent
-for structured output parsed into ``SentimentScores``, retried with backoff over a
-threadpool. Only the client construction and the recorded identity string differ
-per provider.
+for structured output parsed into a pydantic response model, retried with backoff
+over a threadpool. Only the client construction, the response model, and the
+recorded identity string differ per provider — the local backends answer with the
+three probabilities alone (no rationale), which is what keeps a small greedy model
+from generating until it runs out of context.
 
 Every backend implements ``score_unique(texts) -> {text: (p_pos, p_neg, p_neu,
 rationale)}`` and ``model_revision() -> str``, so ``tyche.news.agents.scorer`` never
@@ -40,11 +43,14 @@ from typing import Any
 
 import torch
 import torch.nn.functional as F
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
+from openai import LengthFinishReasonError
 from pydantic import BaseModel, Field, field_validator, model_validator
 from tenacity import (
     Retrying,
     before_sleep_log,
-    retry_if_exception_type,
+    retry_if_not_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
@@ -69,13 +75,21 @@ AVAILABLE_BACKENDS: tuple[str, ...] = (
 SentimentTriplet = tuple[float, float, float, str]
 
 
-# --- Response schema (pydantic), shared by every backend ----------------------
-class SentimentScores(BaseModel):
-    """Validated sentiment response.
+# --- Response schemas (pydantic) ----------------------------------------------
+class SentimentProbabilities(BaseModel):
+    """The three class probabilities, and nothing else.
+
+    This is the response schema for the local backends. It deliberately has no
+    free-text field: a JSON-schema-constrained decoder guarantees *valid* JSON but
+    not a *finite* string, so an unbounded ``rationale`` lets a small greedy model
+    repeat itself until it exhausts the context window — which is what
+    Llama-2-13B-chat on Ollama does, surfacing as ``LengthFinishReasonError``
+    instead of an answer. With only three numbers to emit, a well-formed response is
+    a few dozen tokens and the model has no room to run away.
 
     Probabilities are coerced to be non-negative and renormalized to sum to 1, so a
     model that returns slightly off-sum values (or a lone class) still yields a
-    proper distribution. ``rationale`` is a short human-readable justification.
+    proper distribution.
     """
 
     p_positive: float = Field(
@@ -93,10 +107,6 @@ class SentimentScores(BaseModel):
         ge=0.0,
         le=1.0,
     )
-    rationale: str = Field(
-        default="",
-        description="One concise sentence justifying the sentiment assessment.",
-    )
 
     @field_validator("p_positive", "p_negative", "p_neutral")
     @classmethod
@@ -104,7 +114,7 @@ class SentimentScores(BaseModel):
         return max(0.0, float(v))
 
     @model_validator(mode="after")
-    def _renormalize(self) -> "SentimentScores":
+    def _renormalize(self) -> "SentimentProbabilities":
         total = self.p_positive + self.p_negative + self.p_neutral
         if total <= 0:
             self.p_positive, self.p_negative, self.p_neutral = 0.0, 0.0, 1.0
@@ -117,6 +127,17 @@ class SentimentScores(BaseModel):
     def as_triplet(self) -> tuple[float, float, float]:
         """Return ``(p_pos, p_neg, p_neu)`` in the scorer's canonical order."""
         return self.p_positive, self.p_negative, self.p_neutral
+
+
+class SentimentScores(SentimentProbabilities):
+    """Probabilities plus a short human-readable justification — the response schema
+    for hosted models, which are reliable enough to be trusted with a free-text
+    field."""
+
+    rationale: str = Field(
+        default="",
+        description="One concise sentence justifying the sentiment assessment.",
+    )
 
 
 class SentimentBackend(ABC):
@@ -142,24 +163,29 @@ class SentimentBackend(ABC):
 # gpt4o_mini / mistral_7b_instruct / llama2_13b_chat — chat-completions backends
 #
 # All three score a summary the same way: one fixed system prompt + the summary,
-# sent to an OpenAI-style chat-completions API asking for structured output parsed
-# into ``SentimentScores``, retried with backoff, over a threadpool of concurrent
-# calls. The ONLY differences are how the client is constructed (Azure's
-# deployment/api-version addressing vs a plain OpenAI-compatible base_url) and the
-# identity string recorded on each row, so that is all the subclasses override.
+# sent to an OpenAI-style chat-completions API asking for structured output, retried
+# with backoff, over a threadpool of concurrent calls. The ONLY differences are how
+# the client is constructed (Azure's deployment/api-version addressing vs a plain
+# OpenAI-compatible base_url), which response schema is requested, and the identity
+# string recorded on each row, so that is all the subclasses override.
 # ===============================================================================
 class ChatCompletionsSentimentBackend(SentimentBackend):
     """Scores summaries through an OpenAI-style chat-completions API.
 
     ``_build_client`` and ``model_revision`` are the provider-specific hooks; every
     config section this class consumes exposes ``system_prompt``, ``temperature``,
-    ``request_timeout``, ``max_retries``, and ``max_workers``.
+    ``request_timeout``, ``max_tokens``, ``max_retries``, and ``max_workers``.
     """
 
     # LangChain ``with_structured_output`` method. The default (tool-calling) is
     # right for models fine-tuned for it; local servers override this — see
     # ``LocalOpenAICompatibleBackend``.
     structured_output_method: str | None = None
+
+    # Schema the model is asked to fill in. ``SentimentScores`` (probabilities plus
+    # a rationale) for hosted models; local backends narrow it to the probabilities
+    # alone — see ``LocalOpenAICompatibleBackend``.
+    response_model: type[SentimentProbabilities] = SentimentScores
 
     accepts_context = True
 
@@ -186,23 +212,21 @@ class ChatCompletionsSentimentBackend(SentimentBackend):
                 if self.structured_output_method
                 else {}
             )
-            self._llm = llm.with_structured_output(SentimentScores, **kwargs)
+            self._llm = llm.with_structured_output(self.response_model, **kwargs)
         return self._llm
 
-    def _score_call(self, text: str) -> SentimentScores:
-        from langchain_core.messages import HumanMessage, SystemMessage
-
+    def _score_call(self, text: str) -> SentimentProbabilities:
         result = self._client().invoke(
             [
                 SystemMessage(content=str(self.cfg.system_prompt)),
                 HumanMessage(content=f"News summary:\n\n{text}"),
             ]
         )
-        # ``with_structured_output`` already returns a validated ``SentimentScores``;
-        # the explicit reconstruction re-runs the pydantic validators as a
+        # ``with_structured_output`` already returns a validated instance; the
+        # explicit reconstruction re-runs the pydantic validators as a
         # belt-and-braces guard against provider quirks (e.g. a raw dict slipping
         # through).
-        return SentimentScores.model_validate(
+        return self.response_model.model_validate(
             result if isinstance(result, dict) else result.model_dump()
         )
 
@@ -212,21 +236,37 @@ class ChatCompletionsSentimentBackend(SentimentBackend):
         The retry budget is read per instance rather than bound by a decorator at
         class-definition time, so it reflects the live config and can differ between
         the backends sharing this class.
+
+        A response truncated by the token limit is explicitly *not* a transient
+        failure: these backends run at temperature 0, so re-sending the identical
+        request reproduces the identical runaway generation — retrying it only burns
+        a full ``max_tokens`` budget per attempt. It is recorded as neutral instead,
+        since one unparseable summary must not abort a whole scoring run.
         """
         if not text or not text.strip():
             return 0.0, 0.0, 1.0, "empty summary"
 
-        for attempt in Retrying(
-            reraise=True,
-            stop=stop_after_attempt(max(1, int(self.cfg.max_retries))),
-            wait=wait_exponential(multiplier=1, min=1, max=30),
-            retry=retry_if_exception_type(Exception),
-            before_sleep=before_sleep_log(log, logging.WARNING),
-        ):
-            with attempt:
-                scores = self._score_call(text)
+        try:
+            for attempt in Retrying(
+                reraise=True,
+                stop=stop_after_attempt(max(1, int(self.cfg.max_retries))),
+                wait=wait_exponential(multiplier=1, min=1, max=30),
+                retry=retry_if_not_exception_type(LengthFinishReasonError),
+                before_sleep=before_sleep_log(log, logging.WARNING),
+            ):
+                with attempt:
+                    scores = self._score_call(text)
+        except LengthFinishReasonError:
+            log.warning(
+                "backend=%s hit the response length limit (max_tokens=%s) without "
+                "closing its JSON — recording the summary as neutral",
+                self.key,
+                self.cfg.max_tokens,
+            )
+            return 0.0, 0.0, 1.0, "unscored — the model's response was truncated"
+
         p_pos, p_neg, p_neu = scores.as_triplet()
-        return p_pos, p_neg, p_neu, scores.rationale
+        return p_pos, p_neg, p_neu, getattr(scores, "rationale", "")
 
     def score_unique(self, texts: list[str]) -> dict[str, SentimentTriplet]:
         max_workers = max(1, int(self.cfg.max_workers))
@@ -257,8 +297,6 @@ class AzureGpt4oMiniBackend(ChatCompletionsSentimentBackend):
         super().__init__("gpt4o_mini", lambda: settings.azure)
 
     def _build_client(self, cfg):
-        from langchain_openai import AzureChatOpenAI
-
         if not cfg.api_key:
             raise RuntimeError(
                 "TYCHE_SENTIMENT_AZURE_API_KEY is not set — the gpt4o_mini "
@@ -279,6 +317,7 @@ class AzureGpt4oMiniBackend(ChatCompletionsSentimentBackend):
             api_key=str(cfg.api_key),
             temperature=float(cfg.temperature),
             timeout=float(cfg.request_timeout),
+            max_tokens=int(cfg.max_tokens),
             max_retries=0,  # retries are handled by our own retry loop
         )
 
@@ -288,21 +327,25 @@ class AzureGpt4oMiniBackend(ChatCompletionsSentimentBackend):
 
 
 class LocalOpenAICompatibleBackend(ChatCompletionsSentimentBackend):
-    """A local OpenAI-compatible chat endpoint (e.g. vLLM's OpenAI server — see
-    ``docker-compose.sentiment-llms.yml`` at the repo root).
+    """A local OpenAI-compatible chat endpoint (Ollama, or vLLM's OpenAI server —
+    see ``docker-compose.sentiment-llms.yml`` at the repo root).
 
     Structured output is requested by JSON schema rather than tool-calling:
     Llama-2-chat has no native tool-calling support (unlike Llama 3.1+), while
     JSON-schema-constrained decoding is enforced by the serving engine at the token
     level regardless of whether the model was fine-tuned for tool use, so the same
     request shape works for every model served this way.
+
+    The response schema is the probabilities alone. These models are asked for a
+    number three times over and nothing else, so there is no free-text field for a
+    greedy decoder to loop inside — see ``SentimentProbabilities``. Rows scored by a
+    local backend therefore carry an empty rationale, exactly as FinBERT's do.
     """
 
     structured_output_method = "json_schema"
+    response_model = SentimentProbabilities
 
     def _build_client(self, cfg):
-        from langchain_openai import ChatOpenAI
-
         log.info(
             "sentiment backend=%s ready (base_url=%s, model=%s)",
             self.key,
@@ -315,6 +358,10 @@ class LocalOpenAICompatibleBackend(ChatCompletionsSentimentBackend):
             model=str(cfg.model),
             temperature=float(cfg.temperature),
             timeout=float(cfg.request_timeout),
+            # Ollama's num_predict and vLLM's max_tokens both default to "until the
+            # context window is full"; without this a single runaway generation costs
+            # thousands of tokens and tens of seconds.
+            max_tokens=int(cfg.max_tokens),
             max_retries=0,  # retries are handled by our own retry loop
         )
 
