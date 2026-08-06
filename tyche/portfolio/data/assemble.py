@@ -18,13 +18,21 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 
+from tyche.common.logging import get_logger
 from tyche.portfolio.config import Config
 from tyche.portfolio.data.calendar import trading_days as _trading_days
+from tyche.portfolio.features import macro_beta as _macro_beta
 from tyche.portfolio.features.alpha_filter import BUY, SELL, apply_filter
 from tyche.portfolio.features.daily import build_daily_features, daily_features
 from tyche.portfolio.features.news import build_news_features, NEWS_FEATURES
-from tyche.portfolio.data.loaders import load_daily, load_news_sentiment
+from tyche.portfolio.data.loaders import (
+    load_daily,
+    load_macro_indicators,
+    load_news_sentiment,
+)
 from tyche.portfolio.data.universe import resolve_universe
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -78,15 +86,61 @@ def _pivot_signal(
     return wide.to_numpy(dtype=np.int8).T
 
 
+def _select_assets(labels: pd.DataFrame, cfg: Config, in_sample_end) -> list[str]:
+    """The names the filter promotes into the traded universe, ranked and capped.
+
+    A name qualifies by firing at least one in-sample BUY; the ranking is how often
+    it fired, tie-broken by mean signal strength. The cap is not a preference — the
+    model emits an ``N x N`` covariance and factorizes it every forward pass, so an
+    uncapped selection (which is what the I-MACD path used to take) can promote
+    hundreds of names and never finish. ``selection_size = 0`` restores that.
+    """
+    in_sample = labels[labels["date"] <= in_sample_end]
+    buys = in_sample[in_sample["signal"] == BUY]
+    if buys.empty:
+        raise RuntimeError(
+            f"the {cfg.filter_indicator} filter selected zero in-sample BUY "
+            "candidates — loosen its thresholds "
+            "(TYCHE_PORTFOLIO_ALPHA_FILTER_THRESHOLD / "
+            "TYCHE_PORTFOLIO_MACRO_BETA_Z_THRESHOLD)"
+        )
+
+    strength = buys["strength"] if "strength" in buys.columns else buys["imacd"].abs()
+    ranked = (
+        buys.assign(_strength=strength.to_numpy())
+        .groupby("asset")["_strength"]
+        .agg(["count", "mean"])
+        .sort_values(["count", "mean"], ascending=False)
+    )
+
+    size = cfg.alpha_filter.selection_size
+    capped = ranked.head(size) if size > 0 else ranked
+    log.info(
+        "%s filter: %d/%d candidates fired in-sample, keeping %d (cap=%s) | "
+        "BUY days per kept name: median=%.0f min=%d max=%d",
+        cfg.filter_indicator,
+        len(ranked),
+        labels["asset"].nunique(),
+        len(capped),
+        size if size > 0 else "none",
+        capped["count"].median(),
+        int(capped["count"].min()),
+        int(capped["count"].max()),
+    )
+    return sorted(capped.index)
+
+
 def assemble(cfg: Config) -> AlignedData:
     daily_raw = load_daily(cfg)
     news_raw = load_news_sentiment(cfg)
+    filter_on = cfg.filter_enabled
+    indicator = cfg.filter_indicator
 
     # Select on in-sample data only — see resolve_universe for why picking the
     # cross-section over the full sample is look-ahead plus survivorship bias.
-    universe_cfg = (
-        replace(cfg.universe, size=0) if cfg.daily.imacd_enabled else cfg.universe
-    )
+    # With a filter active the liquidity cap is lifted here and re-imposed after the
+    # filter has spoken, so the filter chooses from every eligible name.
+    universe_cfg = replace(cfg.universe, size=0) if filter_on else cfg.universe
     assets = resolve_universe(
         daily_raw,
         set(news_raw["asset"].unique()),
@@ -96,33 +150,40 @@ def assemble(cfg: Config) -> AlignedData:
 
     candidate_daily = daily_raw[daily_raw["asset"].isin(assets)].reset_index(drop=True)
 
-    # Diagnostics are always built: the pure-alpha filter needs imacd/resid_r2, and
-    # they cost nothing extra to compute. For I-MACD runs this is intentionally done
-    # before the final asset narrowing, so the market-model residual is estimated
-    # against the uncapped eligible cross-section rather than the old 50-name cap.
-    daily_long = build_daily_features(candidate_daily, cfg, with_diagnostics=True)
-    labels = apply_filter(daily_long, cfg.alpha_filter)
-
-    if cfg.daily.imacd_enabled:
-        in_sample_end = pd.Timestamp(cfg.split.in_sample_end, tz="UTC")
-        selected = sorted(
-            labels.loc[
-                (labels["date"] <= in_sample_end) & (labels["signal"] == BUY),
-                "asset",
-            ].unique()
+    # ``daily_long`` is built over the candidate set for I-MACD so the market-model
+    # residual is estimated against the uncapped eligible cross-section. The
+    # alpha-beta filter works off raw prices and an exogenous panel instead, so its
+    # features are deferred until after narrowing — building 17 features over ~1.5k
+    # names only to discard all but 50 is pure waste.
+    daily_long = None
+    if filter_on and indicator == "macro_beta":
+        candidate_days = _trading_days(candidate_daily, assets)
+        labels = _macro_beta.apply_filter(
+            candidate_daily, load_macro_indicators(cfg), candidate_days, cfg
         )
-        if not selected:
-            raise RuntimeError(
-                "I-MACD filter selected zero in-sample BUY candidates; lower "
-                "TYCHE_PORTFOLIO_ALPHA_FILTER_THRESHOLD or reduce persistence"
-            )
-        assets = selected
+    elif indicator in ("imacd", "macro_beta"):
+        # Diagnostics are always built: the pure-alpha filter needs imacd/resid_r2,
+        # and they cost nothing extra to compute.
+        daily_long = build_daily_features(candidate_daily, cfg, with_diagnostics=True)
+        labels = apply_filter(daily_long, cfg.alpha_filter)
+    else:
+        raise ValueError(
+            f"unknown alpha-filter indicator {indicator!r} — "
+            "expected 'imacd' or 'macro_beta'"
+        )
+
+    if filter_on:
+        assets = _select_assets(
+            labels, cfg, pd.Timestamp(cfg.split.in_sample_end, tz="UTC")
+        )
 
     daily_raw = candidate_daily[candidate_daily["asset"].isin(assets)].reset_index(
         drop=True
     )
     news_raw = news_raw[news_raw["asset"].isin(assets)].reset_index(drop=True)
     days = _trading_days(daily_raw, assets)
+    if daily_long is None:
+        daily_long = build_daily_features(daily_raw, cfg, with_diagnostics=True)
     daily_long = daily_long[daily_long["asset"].isin(assets)].reset_index(drop=True)
     labels = labels[labels["asset"].isin(assets)].reset_index(drop=True)
     news_long = build_news_features(news_raw, days, cfg)

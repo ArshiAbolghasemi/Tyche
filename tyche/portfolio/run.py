@@ -165,11 +165,11 @@ def _run_portfolios(prepared: PreparedExperiment, cfg: Config) -> dict:
     data = prepared.data
     log.info(
         "portfolio backtest | H=%d | cost_model=%s | transaction_cost_bps=%.4f "
-        "| imacd_filter=%s",
+        "| stock_filter=%s",
         cfg.window.holding,
         cfg.portfolio.cost_model,
         cfg.portfolio.transaction_cost_bps,
-        "on" if cfg.daily.imacd_enabled else "off",
+        cfg.filter_indicator if cfg.filter_enabled else "off",
     )
 
     rebal_t = _rebalance_days(prepared.oos, cfg)
@@ -182,14 +182,14 @@ def _run_portfolios(prepared: PreparedExperiment, cfg: Config) -> dict:
         "HRP": hrp(prepared.forecasts, cfg),
     }
 
-    # I-MACD filter: the model forecasts returns/covariances from OHLCV + news, then
-    # the allocator sizes only names whose idiosyncratic momentum passes the gate.
-    # Applying the mask after forecasting keeps the model's N x N covariance shape
-    # fixed while letting I-MACD decide tradable membership at each rebalance.
-    if cfg.daily.imacd_enabled:
+    # Stock filter: the model forecasts returns/covariances from OHLCV + news, then
+    # the allocator sizes only names whose signal passes the gate. Applying the mask
+    # after forecasting keeps the model's N x N covariance shape fixed while letting
+    # the filter decide tradable membership at each rebalance.
+    if cfg.filter_enabled:
         if data.alpha_signal is None:
             raise RuntimeError(
-                "daily.imacd_enabled is set but the aligned data carries no "
+                "the stock filter is enabled but the aligned data carries no "
                 "alpha_signal — rebuild it through data.assemble.assemble"
             )
         log_mask_coverage(data.alpha_signal, rebal_t, cfg.alpha_filter)

@@ -106,6 +106,23 @@ arm an allocation-stage filter rather than a new predictive feature.
 The BUY/SELL/HOLD filter built on top of this feature is documented separately in
 [Pure-Alpha Filter](pure-alpha-filter.md).
 
+## The macro indicator panel
+
+A second, interchangeable stock filter regresses each name against an exogenous
+macro panel — sector ETFs, world indices, commodities, volatility, rates, crypto and
+FRED releases — rather than against the cross-section. None of that is derivable
+from the Russell 2000 price file, so it is fetched once into
+`data/macro/indicators.parquet`:
+
+```bash
+uv run python scripts/fetch_macro_indicators.py
+```
+
+`load_macro_indicators` reads it as `[indicator, date, adj_close, source]`; only the
+alpha-beta filter touches it, and a missing file is an actionable error rather than a
+silent empty panel. The strategy built on it is documented in
+[Alpha-Beta Filter](macro-beta-filter.md).
+
 ## Windowing and splitting
 
 `tyche/portfolio/data/windows.py` builds windowed cross-sectional samples: a

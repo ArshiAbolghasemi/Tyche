@@ -51,6 +51,33 @@ def load_news_sentiment(cfg: Config) -> pd.DataFrame:
     return df[keep].sort_values("ts").reset_index(drop=True)
 
 
+def load_macro_indicators(cfg: Config) -> pd.DataFrame:
+    """The exogenous macro factor panel, one row per (indicator, date).
+
+    Written by ``scripts/fetch_macro_indicators.py``: sector ETFs, commodities, world
+    indices, volatility, rates and crypto from Yahoo, plus FRED macro releases.
+    ``source`` (``yf`` / ``fred``) selects the beta window in the feature stage —
+    FRED series publish monthly or quarterly and need a longer one.
+
+    Only the alpha-beta filter reads this, so a missing file is an actionable error
+    rather than a silent empty panel.
+    """
+    path = cfg.paths.macro_indicators
+    if not path.exists():
+        raise FileNotFoundError(
+            f"macro indicator panel not found at {path} — fetch it first with\n"
+            "  uv run python scripts/fetch_macro_indicators.py"
+        )
+    df = pd.read_parquet(path, columns=["indicator", "date", "adj_close", "source"])
+    df["date"] = pd.to_datetime(df["date"], utc=True).dt.normalize()
+    return (
+        df.dropna(subset=["indicator", "date", "adj_close"])
+        .drop_duplicates(["indicator", "date"])
+        .sort_values(["indicator", "date"])
+        .reset_index(drop=True)
+    )
+
+
 def load_daily(cfg: Config) -> pd.DataFrame:
     """Daily OHLCV, one row per (asset, date), for every symbol in the file.
 
