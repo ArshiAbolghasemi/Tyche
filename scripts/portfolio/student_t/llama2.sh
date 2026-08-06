@@ -15,4 +15,4 @@ TYCHE_PORTFOLIO_PATHS_NEWS_SENTIMENT=data/output/news_sentiment_llama2_13b_chat.
 TYCHE_PORTFOLIO_TRAIN_TARGET_DISTRIBUTION=student_t \
   uv run python -m tyche.portfolio.run \
     --holdings 1 2 3 5 10 20 40 60 \
-    --transaction-cost-bps 0 1 2 5 10 "$@"
+    --transaction-cost-bps 0 1 2 5 10 20 50 100"$@"
