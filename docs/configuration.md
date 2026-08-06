@@ -53,7 +53,8 @@ with defaults):
 | Split | `SplitConfig` | `TYCHE_PORTFOLIO_SPLIT_*` | Chronological in-sample/test date ranges, train fraction |
 | Window | `WindowConfig` | `TYCHE_PORTFOLIO_WINDOW_*` | Lookback length `T`, holding/horizon `H`, embargo |
 | Universe | `UniverseConfig` | `TYCHE_PORTFOLIO_UNIVERSE_*` | Cross-section size cap, full-history requirement, liquidity floor, explicit symbol list |
-| Daily features | `DailyFeatureConfig` | `TYCHE_PORTFOLIO_DAILY_*` | Rolling windows for volatility/momentum/RSI/ATR/z-score |
+| Daily features | `DailyFeatureConfig` | `TYCHE_PORTFOLIO_DAILY_*` | Rolling windows for volatility/momentum/RSI/ATR/z-score, plus the I-MACD market-model window and EMA spans |
+| Pure-alpha filter | `AlphaFilterConfig` | `TYCHE_PORTFOLIO_ALPHA_FILTER_*` | I-MACD BUY/SELL/HOLD gating: threshold mode, `R^2` ceiling, persistence |
 | News features | `NewsFeatureConfig` | `TYCHE_PORTFOLIO_NEWS_*` | Story-clustering lookback, similarity threshold, device, batch size |
 | Model | `ModelConfig` | `TYCHE_PORTFOLIO_MODEL_*` | Conv channels/kernel, dropout, hidden dim, covariance rank/eps, sequence encoder choice |
 | Train | `TrainConfig` | `TYCHE_PORTFOLIO_TRAIN_*` | Epochs, batch size, LR, target distribution (`gaussian`/`student_t`), MC-dropout samples, grad clip, early-stopping patience, seed, device |

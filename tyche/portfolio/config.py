@@ -132,7 +132,8 @@ class UniverseConfig:
     batch's covariance tensor is ~320 MB and the factorization is O(N^3) — not
     runnable. So the universe is capped at the ``size`` most liquid names that have
     both complete price history and news coverage. Raise it as far as the hardware
-    allows; the selection is deterministic given the data.
+    allows; set it to 0 or a negative value only for diagnostics that do not train
+    the covariance model. The selection is deterministic given the data.
     """
 
     size: int = field(
@@ -176,6 +177,113 @@ class DailyFeatureConfig:
     )
     zscore_window: int = field(
         default_factory=lambda: _env("TYCHE_PORTFOLIO_DAILY_ZSCORE_WINDOW", 20, int)
+    )
+
+    # --- Idiosyncratic MACD (I-MACD) -------------------------------------------
+    # MACD run on the *market-model residual* path rather than on price, damped by
+    # the macro-explained variance share. See features/daily.py::_imacd.
+    #
+    # Enables the I-MACD stock filter. I-MACD is not exposed as a model feature:
+    # when this flag is true, the pipeline uses it to select a pure-alpha stock set
+    # and to mask allocations while the return model still consumes OHLCV + news.
+    imacd_enabled: bool = field(
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_DAILY_IMACD_ENABLED", False, bool)
+    )
+    #
+    # ``imacd_window`` is the rolling market-model window: long enough for a stable
+    # beta/R^2, and the dominant term in the feature's warm-up (roughly
+    # ``imacd_window + imacd_slow`` trading days before the first finite value).
+    imacd_window: int = field(
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_DAILY_IMACD_WINDOW", 126, int)
+    )
+    # (fast, slow, signal) spans. Deliberately ~2x the classic (12, 26, 9): the
+    # benchmark's forecast IC is ~0 at 1-5 days and peaks at 40-60, so a 26-day
+    # MACD is tuned to the horizon where this data shows no edge.
+    imacd_fast: int = field(
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_DAILY_IMACD_FAST", 20, int)
+    )
+    imacd_slow: int = field(
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_DAILY_IMACD_SLOW", 50, int)
+    )
+    imacd_signal: int = field(
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_DAILY_IMACD_SIGNAL", 15, int)
+    )
+
+
+@dataclass(frozen=True)
+class AlphaFilterConfig:
+    """Pure-alpha stock filter driven by the I-MACD daily feature.
+
+    Turns the continuous ``imacd`` column into a BUY / SELL / HOLD label per
+    ``(asset, date)``, the analogue of the MACD crossover rule but with the macro
+    component already removed from both the trend and the magnitude.
+    """
+
+    # Which names survive the mask.
+    #   "buy_only"     — hold only BUY names. Faithful to the "open a long position
+    #                    only if the signals align" rule, but concentrated: some
+    #                    sessions select fewer than five of fifty names.
+    #   "exclude_sell" — hold everything except actively bearish names. Much less
+    #                    concentrated, and a weaker statement about the signal.
+    mask_mode: str = field(
+        default_factory=lambda: _env(
+            "TYCHE_PORTFOLIO_ALPHA_FILTER_MASK_MODE", "buy_only"
+        )
+    )
+    # What to do on a rebalance where the mask selects nothing (or the masked
+    # weights do not sum to a positive book).
+    #   "cash"       — hold zero weights until the next rebalance. Honest, and the
+    #                  backtest handles it (a zero book earns 0% and is charged the
+    #                  turnover of going flat), but it earns no risk-free rate.
+    #   "unfiltered" — fall back to the allocator's unmasked weights.
+    empty_action: str = field(
+        default_factory=lambda: _env(
+            "TYCHE_PORTFOLIO_ALPHA_FILTER_EMPTY_ACTION", "cash"
+        )
+    )
+    # "absolute" thresholds on the raw I-MACD value (comparable across assets
+    # because the feature is already volatility-normalized); "cross_sectional"
+    # instead takes the top/bottom ``quantile`` of names each day, which yields a
+    # fixed-size trigger set per rebalance.
+    mode: str = field(
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_ALPHA_FILTER_MODE", "absolute")
+    )
+    # tau in |I-MACD| > tau. Units are standard deviations of idiosyncratic drift
+    # (the feature is normalized by its impulse-response norm, so this is portable
+    # across universes and span choices). Measured on the 50-name Russell 2000
+    # cross-section over 2025, I-MACD has std ~0.77 and tau=1.0 triggers ~15% of
+    # (asset, date) pairs after the purity and persistence gates — roughly 7 names
+    # of 50 per session. Lower it toward 0.5 for a wider trigger set (~40%).
+    threshold: float = field(
+        default_factory=lambda: _env(
+            "TYCHE_PORTFOLIO_ALPHA_FILTER_THRESHOLD", 1.0, float
+        )
+    )
+    # Cross-sectional tail size per side when mode == "cross_sectional".
+    quantile: float = field(
+        default_factory=lambda: _env(
+            "TYCHE_PORTFOLIO_ALPHA_FILTER_QUANTILE", 0.20, float
+        )
+    )
+    # Hard ceiling on the macro-explained variance share. A name whose returns are
+    # mostly a market echo is not a pure-alpha candidate however strong its residual
+    # trend looks, so it is forced to HOLD regardless of I-MACD.
+    #
+    # This is a backstop, not the main mechanism — the sqrt(1 - R^2) term inside
+    # I-MACD already damps macro-driven names continuously. On the small-cap default
+    # universe R^2 is low (median 0.28, max 0.74) so 0.60 binds on only ~2% of rows;
+    # it becomes the active constraint on a large-cap universe where R^2 runs far
+    # higher.
+    max_r2: float = field(
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_ALPHA_FILTER_MAX_R2", 0.60, float)
+    )
+    # Require the signal to hold the same sign for this many consecutive sessions
+    # before it counts. 1 disables the check. Raw MACD-style crossovers are sparse
+    # and unstable; persistence trades a little latency for much less churn.
+    min_persistence: int = field(
+        default_factory=lambda: _env(
+            "TYCHE_PORTFOLIO_ALPHA_FILTER_MIN_PERSISTENCE", 3, int
+        )
     )
 
 
@@ -358,6 +466,7 @@ class Config:
     window: WindowConfig = field(default_factory=WindowConfig)
     universe: UniverseConfig = field(default_factory=UniverseConfig)
     daily: DailyFeatureConfig = field(default_factory=DailyFeatureConfig)
+    alpha_filter: AlphaFilterConfig = field(default_factory=AlphaFilterConfig)
     news: NewsFeatureConfig = field(default_factory=NewsFeatureConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)

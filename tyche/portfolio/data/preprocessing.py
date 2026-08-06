@@ -59,4 +59,5 @@ def apply_standardizer(data: AlignedData, s: Standardizer) -> AlignedData:
         adj_close=data.adj_close,
         daily_names=data.daily_names,
         news_names=data.news_names,
+        alpha_signal=data.alpha_signal,
     )

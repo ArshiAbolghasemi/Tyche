@@ -44,26 +44,30 @@ def resolve_universe(
 ) -> list[str]:
     """Pick the traded cross-section from the available data.
 
-    Selection, in order:
+        Selection, in order:
 
-    1. Keep symbols that have news — a price-only name contributes nothing to the
-       news branch and would train it on a constant.
-    2. Optionally require a complete price series, so the covariance is estimated on
-       a rectangular panel rather than one whose membership changes by day.
-    3. Rank what survives by median dollar volume and take the top ``size``.
+        1. Keep symbols that have news — a price-only name contributes nothing to the
+           news branch and would train it on a constant.
+        2. Optionally require a complete price series, so the covariance is estimated on
+           a rectangular panel rather than one whose membership changes by day.
+    3. Rank what survives by median dollar volume and take the top ``size``. A
+       non-positive ``size`` disables this cap for diagnostics that do not train the
+       covariance model.
 
-    Every step is evaluated **only on data up to ``selection_end``** (the in-sample
-    boundary). Choosing the universe over the full sample would be look-ahead of the
-    worst kind: ranking by liquidity measured partly in the test period lets the
-    backtest trade names it could only have identified later, and requiring a
-    complete series over the whole sample additionally selects for survival — the
-    names that blew up or delisted mid-sample are silently excluded, which flatters
-    every strategy at once. Passing ``None`` restores the (biased) full-sample
-    behaviour and is intended only for diagnostics.
+        Every step is evaluated **only on data up to ``selection_end``** (the in-sample
+        boundary). Choosing the universe over the full sample would be look-ahead of the
+        worst kind: ranking by liquidity measured partly in the test period lets the
+        backtest trade names it could only have identified later, and requiring a
+        complete series over the whole sample additionally selects for survival — the
+        names that blew up or delisted mid-sample are silently excluded, which flatters
+        every strategy at once. Passing ``None`` restores the (biased) full-sample
+        behaviour and is intended only for diagnostics.
 
-    The size cap is a hardware constraint, not a modelling preference: the network
-    emits an ``N x N`` covariance and factorizes it every forward pass, so cost grows
-    as ``N^3``. ``cfg.symbols`` bypasses the ranking when you want a fixed list.
+        The size cap is a hardware constraint, not a modelling preference: the network
+        emits an ``N x N`` covariance and factorizes it every forward pass, so cost grows
+        as ``N^3``. Disable the cap only for price-side diagnostics such as the
+        standalone I-MACD filter. ``cfg.symbols`` bypasses the ranking when you want a
+        fixed list.
     """
     priced = set(daily["asset"].unique())
     candidates = priced & news_assets
@@ -114,18 +118,22 @@ def resolve_universe(
                 ", ".join(missing[:10]),
             )
     else:
-        selected = liquidity.nlargest(max(1, cfg.size)).index.tolist()
+        selected = (
+            liquidity.nlargest(cfg.size).index.tolist()
+            if cfg.size > 0
+            else liquidity.sort_values(ascending=False).index.tolist()
+        )
 
     if not selected:
         raise RuntimeError("universe resolved to zero symbols after filtering")
 
     universe = sorted(selected)
     log.info(
-        "universe: %d symbols from %d priced / %d with news (cap=%d) | %s%s",
+        "universe: %d symbols from %d priced / %d with news (cap=%s) | %s%s",
         len(universe),
         len(priced),
         len(news_assets),
-        cfg.size,
+        cfg.size if cfg.size > 0 else "none",
         ", ".join(universe[:10]),
         " ..." if len(universe) > 10 else "",
     )

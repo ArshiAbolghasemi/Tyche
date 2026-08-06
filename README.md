@@ -35,6 +35,7 @@ Full walkthrough: [`docs/setup.md`](docs/setup.md).
 | [Setup](docs/setup.md) | Environment, dependencies, `.env`, DVC-tracked data |
 | [News Sentiment Pipeline](docs/news-pipeline.md) | The agent DAG that turns raw news into a sentiment contract |
 | [Data & Features](docs/data-features.md) | Universe, calendar, feature branches, windowing/splits |
+| [Pure-Alpha Filter](docs/pure-alpha-filter.md) | The I-MACD indicator and the BUY/SELL/HOLD stock filter built on it |
 | [Predictive Model](docs/model.md) | The multimodal return-distribution network, training, and inference |
 | [Portfolio Management](docs/portfolio-management.md) | Allocation strategies, transaction costs, and the backtest engine |
 | [Configuration Reference](docs/configuration.md) | Every config surface, grouped by domain |

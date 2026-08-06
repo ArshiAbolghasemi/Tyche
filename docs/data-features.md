@@ -34,7 +34,12 @@ uses information available at or before `d`'s close):
 
 - **Daily** (`features/daily.py`) — normalized OHLCV-derived features (returns,
   ranges, ratios, rolling volatility/momentum/RSI/ATR/z-score), one row per
-  `(asset, date)`. Raw prices are never fed directly to the model.
+  `(asset, date)`. Raw prices are never fed directly to the model. **I-MACD**,
+  the idiosyncratic momentum indicator described below, is computed only for
+  diagnostics/filtering and is not fed to the return model.
+  `build_daily_features(..., with_diagnostics=True)` additionally returns
+  `DAILY_DIAGNOSTICS` (`resid_r2`), which the pure-alpha filter consumes but the
+  model is never shown.
 - **News** (`features/news.py`) — exact-window, centroid-representative story
   sentiment. For decision day `t`, the window is strictly lagged: effective-news
   dates `t−30` through `t−1`; articles mapped to `t` are excluded. Articles in
@@ -43,6 +48,63 @@ uses information available at or before `d`'s close):
   its centroid-closest article. Daily features are the mean representative
   sentiment and the log count of unique stories in the window. Days with no news
   are zero, never forward-filled.
+
+## I-MACD: idiosyncratic momentum
+
+`imacd` is the only daily feature that needs the cross-section. It is a MACD run
+on the **market-model residual** path rather than on price, then damped by how
+macro-driven the name is — one signed number encoding both halves of a "pure
+alpha" claim (an idiosyncratic move, with no macro co-movement).
+
+Per asset, a rolling univariate OLS against the equal-weighted universe return
+`r_m` over `imacd_window` sessions (ending at `t`, inclusive, so it stays causal):
+
+```
+r_i = alpha + beta * r_m + eps
+C   = cumsum(eps)                                  idiosyncratic cumulative log return
+line = EMA_fast(C) - EMA_slow(C)
+hist = line - EMA_signal(line)
+
+I-MACD = [hist / (sigma_eps * ||h||)] * (1 - R^2)
+```
+
+Two details make this usable across a cross-section, and both differ from a
+textbook MACD:
+
+- **Scale.** A raw MACD is in price units, so a \$400 and a \$20 name are not
+  comparable — fatal for a cross-sectional filter. Dividing by the residual
+  volatility fixes that. `||h||` is the L2 norm of the impulse response of
+  `residual -> histogram` (`_imacd_scale`), which puts the first factor on a
+  unit-variance scale under an i.i.d.-residual null, so a threshold reads as
+  standard deviations of idiosyncratic drift regardless of the spans chosen. The
+  intuitive guess `sqrt(slow)` is wrong by ~13x (7.07 vs 0.528 at the default
+  spans), so the constant is measured from the filter rather than assumed.
+  Because `sigma_eps = sigma_i * sqrt(1 - R^2)`, the trend and purity factors
+  collapse into one expression and the residual volatility never has to be
+  estimated separately.
+- **Spans.** `(20, 50, 15)` rather than the classic `(12, 26, 9)`. The benchmark's
+  forecast IC is ~0 at 1-5 day horizons and peaks at 40-60, so a 26-day MACD is
+  tuned to the horizon where this data shows no edge.
+
+Removing the market component also restores cross-sectional discrimination:
+residuals are zero-mean by construction, so the sign splits near 50/50 (measured:
+1014 BUY vs 844 SELL over 2025), whereas a price MACD reads bullish on most names
+at once in an up year.
+
+**Warm-up.** The first finite value needs roughly `imacd_window + imacd_slow`
+sessions — 189 of the 565 trading days on the shipped data, which is 60% of the
+in-sample period. Those rows are zero-filled by `preprocessing` like any other
+warm-up NaN, so they contribute a constant rather than breaking. Lower
+`TYCHE_PORTFOLIO_DAILY_IMACD_WINDOW` to 60 to recover in-sample coverage at the
+cost of a noisier beta and `R^2`.
+
+**The model never sees `imacd`.** I-MACD is computed as a diagnostic so the
+pure-alpha filter can select BUY/SELL/HOLD candidates, but the return forecaster
+keeps the same daily input width as the baseline branch. This makes the I-MACD
+arm an allocation-stage filter rather than a new predictive feature.
+
+The BUY/SELL/HOLD filter built on top of this feature is documented separately in
+[Pure-Alpha Filter](pure-alpha-filter.md).
 
 ## Windowing and splitting
 

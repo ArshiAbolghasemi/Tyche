@@ -16,6 +16,7 @@ import pandas as pd
 
 from tyche.common.logging import get_logger
 from tyche.portfolio.allocation.backtest import run_backtest
+from tyche.portfolio.allocation.mask import log_mask_coverage, masked_strategy
 from tyche.portfolio.allocation.moments import log_to_simple
 from tyche.portfolio.allocation.strategies import bayesian_bl, bl, ew, hrp, mvo, rp
 from tyche.portfolio.config import Config, default_config
@@ -163,10 +164,12 @@ def _backtest(data, days, rebal_t, strategy, cfg: Config):
 def _run_portfolios(prepared: PreparedExperiment, cfg: Config) -> dict:
     data = prepared.data
     log.info(
-        "portfolio backtest | H=%d | cost_model=%s | transaction_cost_bps=%.4f",
+        "portfolio backtest | H=%d | cost_model=%s | transaction_cost_bps=%.4f "
+        "| imacd_filter=%s",
         cfg.window.holding,
         cfg.portfolio.cost_model,
         cfg.portfolio.transaction_cost_bps,
+        "on" if cfg.daily.imacd_enabled else "off",
     )
 
     rebal_t = _rebalance_days(prepared.oos, cfg)
@@ -178,6 +181,23 @@ def _run_portfolios(prepared: PreparedExperiment, cfg: Config) -> dict:
         "RP": rp(prepared.forecasts, cfg),
         "HRP": hrp(prepared.forecasts, cfg),
     }
+
+    # I-MACD filter: the model forecasts returns/covariances from OHLCV + news, then
+    # the allocator sizes only names whose idiosyncratic momentum passes the gate.
+    # Applying the mask after forecasting keeps the model's N x N covariance shape
+    # fixed while letting I-MACD decide tradable membership at each rebalance.
+    if cfg.daily.imacd_enabled:
+        if data.alpha_signal is None:
+            raise RuntimeError(
+                "daily.imacd_enabled is set but the aligned data carries no "
+                "alpha_signal — rebuild it through data.assemble.assemble"
+            )
+        log_mask_coverage(data.alpha_signal, rebal_t, cfg.alpha_filter)
+        strategies = {
+            name: masked_strategy(strat, data.alpha_signal, cfg.alpha_filter)
+            for name, strat in strategies.items()
+        }
+
     port_metrics, curves = {}, {}
     for name, strat in strategies.items():
         net, metrics = _backtest(data, data.days, rebal_t, strat, cfg)
