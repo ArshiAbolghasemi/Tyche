@@ -37,4 +37,4 @@ if ((${#failed[@]})); then
   exit 1
 fi
 
-echo "all macro alpha-beta runs complete -> benchmark_macro_alpha/"
+echo "all macro alpha-beta runs complete -> benchmark/"

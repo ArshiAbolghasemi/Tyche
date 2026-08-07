@@ -2,7 +2,7 @@
 #
 # Macro alpha-beta arm — Pure Beta (S_I \\ S_S — indicator-triggered only)
 # finbert sentiment, student_t target distribution.
-#   -> benchmark_macro_alpha/pure_beta/finbert/student_t/
+#   -> benchmark/pure_beta/finbert/student_t/
 #
 # Pairs with the baseline in scripts/portfolio/student_t/finbert.sh and the I-MACD
 # arm in scripts/portfolio/imacd/student_t/finbert.sh. All arms train the same
@@ -30,7 +30,7 @@ TYCHE_PORTFOLIO_MACRO_ALPHA_Z_THRESHOLD=${Z_THRESHOLD:-2.0} \
 TYCHE_PORTFOLIO_MACRO_ALPHA_BETA_THRESHOLD=${BETA_THRESHOLD:-1.0} \
 TYCHE_PORTFOLIO_MACRO_ALPHA_HOLD_DAYS=${HOLD_DAYS:-0} \
 TYCHE_PORTFOLIO_MACRO_ALPHA_USE_BETA_SIGN=${USE_BETA_SIGN:-false} \
-TYCHE_PORTFOLIO_PATHS_ARTIFACTS=benchmark_macro_alpha/pure_beta \
+TYCHE_PORTFOLIO_PATHS_ARTIFACTS=benchmark/pure_beta \
   uv run python -m tyche.portfolio.run \
     --holdings 1 2 3 5 10 20 40 60 \
     --transaction-cost-bps 0 1 2 5 10 20 50 100 "$@"

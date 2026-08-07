@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Portfolio run on Azure OpenAI gpt-4o-mini sentiment, Gaussian target distribution.
-#   -> benchmark/gpt4o_mini/gaussian/
+#   -> benchmark/universal/gpt4o_mini/gaussian/
 #
 # Needs ./scripts/news/gpt4o_mini.sh to have run first.
 # Extra args override the defaults, e.g.
@@ -13,6 +13,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../../.."
 TYCHE_SENTIMENT_BACKENDS=gpt4o_mini \
 TYCHE_PORTFOLIO_PATHS_NEWS_SENTIMENT=data/output/news_sentiment_gpt4o_mini.parquet \
 TYCHE_PORTFOLIO_TRAIN_TARGET_DISTRIBUTION=gaussian \
+TYCHE_PORTFOLIO_PATHS_ARTIFACTS=benchmark/universal \
   uv run python -m tyche.portfolio.run \
     --holdings 1 2 3 5 10 20 40 60 \
-    --transaction-cost-bps 0 1 2 5 10 20 50 100"$@"
+    --transaction-cost-bps 0 1 2 5 10 20 50 100 "$@"
