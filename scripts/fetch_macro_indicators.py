@@ -1,6 +1,6 @@
 """Fetch the macro-indicator factor panel used by the alpha-beta stock filter.
 
-The alpha-beta strategy (see ``tyche/portfolio/features/macro_beta.py``) regresses
+The alpha-beta strategy (see ``tyche/portfolio/features/macro_alpha.py``) regresses
 each stock against a panel of *exogenous* factors — sector ETFs, commodities, world
 indices, volatility, rates, crypto — and trades names whose beta to a factor that
 just made an abnormal move is large. None of that is derivable from the Russell 2000

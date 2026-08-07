@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 #
-# Run every alpha-beta portfolio job: all sentiment backends x both target
+# Run every Pure Beta (S_I \\ S_S) job: all sentiment backends x both target
 # distributions. Extra arguments are forwarded to each backend script.
 #
 # Examples:
-#   ./scripts/portfolio/macro_beta/all.sh
-#   ./scripts/portfolio/macro_beta/all.sh --holdings 40 60
-#   BACKENDS="gpt4o_mini finbert" DISTRIBUTIONS=gaussian ./scripts/portfolio/macro_beta/all.sh
-#   STRATEGY=intersection_own_ind ./scripts/portfolio/macro_beta/all.sh --holdings 40
+#   ./scripts/portfolio/macro_alpha/pure_beta/all.sh
+#   ./scripts/portfolio/macro_alpha/pure_beta/all.sh --holdings 40 60
+#   BACKENDS="gpt4o_mini finbert" DISTRIBUTIONS=gaussian ./scripts/portfolio/macro_alpha/pure_beta/all.sh
+#   BETA_THRESHOLD=0.3 ./scripts/portfolio/macro_alpha/pure_beta/all.sh --holdings 40
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -25,17 +25,17 @@ for dist in $DISTRIBUTIONS; do
       continue
     fi
 
-    echo "=== $dist / $backend ==="
+    echo "=== pure_beta / $dist / $backend ==="
     if ! "$script" "$@"; then
-      echo "FAILED: $dist/$backend" >&2
+      echo "FAILED: pure_beta/$dist/$backend" >&2
       failed+=("$dist/$backend")
     fi
   done
 done
 
-if (("${#failed[@]}")); then
+if ((${#failed[@]})); then
   printf 'failed runs: %s\n' "${failed[*]}" >&2
   exit 1
 fi
 
-echo "all alpha-beta runs complete -> benchmark_macro_beta/"
+echo "all pure_beta runs complete -> benchmark_macro_alpha/pure_beta/"

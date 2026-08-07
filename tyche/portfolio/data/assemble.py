@@ -21,7 +21,7 @@ import pandas as pd
 from tyche.common.logging import get_logger
 from tyche.portfolio.config import Config
 from tyche.portfolio.data.calendar import trading_days as _trading_days
-from tyche.portfolio.features import macro_beta as _macro_beta
+from tyche.portfolio.features import macro_alpha as _macro_alpha
 from tyche.portfolio.features.alpha_filter import BUY, SELL, apply_filter
 from tyche.portfolio.features.daily import build_daily_features, daily_features
 from tyche.portfolio.features.news import build_news_features, NEWS_FEATURES
@@ -102,7 +102,7 @@ def _select_assets(labels: pd.DataFrame, cfg: Config, in_sample_end) -> list[str
             f"the {cfg.filter_indicator} filter selected zero in-sample BUY "
             "candidates — loosen its thresholds "
             "(TYCHE_PORTFOLIO_ALPHA_FILTER_THRESHOLD / "
-            "TYCHE_PORTFOLIO_MACRO_BETA_Z_THRESHOLD)"
+            "TYCHE_PORTFOLIO_MACRO_ALPHA_Z_THRESHOLD)"
         )
 
     strength = buys["strength"] if "strength" in buys.columns else buys["imacd"].abs()
@@ -156,12 +156,12 @@ def assemble(cfg: Config) -> AlignedData:
     # features are deferred until after narrowing — building 17 features over ~1.5k
     # names only to discard all but 50 is pure waste.
     daily_long = None
-    if filter_on and indicator == "macro_beta":
+    if filter_on and indicator == "macro_alpha":
         candidate_days = _trading_days(candidate_daily, assets)
-        labels = _macro_beta.apply_filter(
+        labels = _macro_alpha.apply_filter(
             candidate_daily, load_macro_indicators(cfg), candidate_days, cfg
         )
-    elif indicator in ("imacd", "macro_beta"):
+    elif indicator in ("imacd", "macro_alpha"):
         # Diagnostics are always built: the pure-alpha filter needs imacd/resid_r2,
         # and they cost nothing extra to compute.
         daily_long = build_daily_features(candidate_daily, cfg, with_diagnostics=True)
@@ -169,7 +169,7 @@ def assemble(cfg: Config) -> AlignedData:
     else:
         raise ValueError(
             f"unknown alpha-filter indicator {indicator!r} — "
-            "expected 'imacd' or 'macro_beta'"
+            "expected 'imacd' or 'macro_alpha'"
         )
 
     if filter_on:

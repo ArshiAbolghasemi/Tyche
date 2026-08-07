@@ -121,7 +121,7 @@ uv run python scripts/fetch_macro_indicators.py
 `load_macro_indicators` reads it as `[indicator, date, adj_close, source]`; only the
 alpha-beta filter touches it, and a missing file is an actionable error rather than a
 silent empty panel. The strategy built on it is documented in
-[Alpha-Beta Filter](macro-beta-filter.md).
+[Alpha-Beta Filter](macro-alpha-filter.md).
 
 ## Windowing and splitting
 

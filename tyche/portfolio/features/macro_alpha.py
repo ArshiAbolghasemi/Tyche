@@ -32,21 +32,27 @@ indicator triggers a stock when all three of these hold::
 The three strategies
 --------------------
 
-Per ``(asset, date)``, the two channels' fired/not-fired states combine into:
+Write ``S_I`` for the set of stocks triggered by indicators and ``S_S`` for the
+self-triggered set. Per ``(asset, date)`` the two channels combine into:
 
-``own_minus_ind``
-    Stock moved, no macro trigger behind it. The pure-alpha leg, and the direct
-    counterpart to what the I-MACD filter measures continuously.
-``ind_minus_own``
-    Factor moved and the stock is levered to it, but the stock has not moved yet.
-    The anticipatory pure-beta leg.
-``intersection_own_ind``
+``pure_alpha`` (``S_S \\ S_I``)
+    Self-triggered only: the stock moved significantly with no indicator behind it,
+    so the move is independent of its broader sector. The direct counterpart to
+    what the I-MACD filter measures continuously.
+``pure_beta`` (``S_I \\ S_S``)
+    Indicator-triggered only: a factor moved and the name is levered to it, but the
+    stock has not moved yet. The anticipatory leg.
+``beta`` (``S_I ∩ S_S``)
     Both fired — an abnormal move that a factor the name is levered to explains.
+
+Naming follows the strategy specification. Note that this ``pure_alpha`` is *not*
+the same thing as ``docs/pure-alpha-filter.md``, which is the I-MACD filter and
+does compute a genuine regression residual; here the alpha leg is a set difference.
 
 Direction follows the research code: a long needs *every* triggering indicator's
 z-score positive (``all_positive``), a short needs every one negative, and mixed
 evidence yields HOLD. On the own leg the sign of the stock's own z-score decides;
-``intersection_own_ind`` requires both to agree.
+``beta`` requires both to agree.
 
 Fidelity notes
 --------------
@@ -84,13 +90,13 @@ import numpy as np
 import pandas as pd
 
 from tyche.common.logging import get_logger
-from tyche.portfolio.config import Config, MacroBetaConfig
+from tyche.portfolio.config import Config, MacroAlphaConfig
 
 log = get_logger(__name__)
 
 BUY, SELL, HOLD = "BUY", "SELL", "HOLD"
 
-STRATEGIES = ("own_minus_ind", "ind_minus_own", "intersection_own_ind")
+STRATEGIES = ("pure_alpha", "pure_beta", "beta")
 
 # Tidy output columns, in order. ``strength`` ranks candidates when the selected
 # set has to be capped; it is not used by the mask.
@@ -174,7 +180,7 @@ def _zscore(s: pd.Series, window: int, min_periods: int) -> pd.Series:
 
 
 def _indicator_panel(
-    macro: pd.DataFrame, days: pd.DatetimeIndex, m: MacroBetaConfig
+    macro: pd.DataFrame, days: pd.DatetimeIndex, m: MacroAlphaConfig
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, str]]:
     """Indicator returns and z-scores on the trading calendar, plus each source.
 
@@ -212,13 +218,13 @@ def _indicator_panel(
     if not ret_cols:
         raise RuntimeError(
             "no macro indicator survived filtering — check paths.macro_indicators "
-            "and macro_beta.indicators"
+            "and macro_alpha.indicators"
         )
 
     missing = (wanted or set()) - set(ret_cols)
     if missing:
         log.warning(
-            "macro-beta: %d requested indicator(s) absent from the panel: %s",
+            "macro-alpha: %d requested indicator(s) absent from the panel: %s",
             len(missing),
             ", ".join(sorted(missing)),
         )
@@ -237,7 +243,7 @@ def _beta_channel(
     ind_ret: pd.DataFrame,
     ind_z: pd.DataFrame,
     sources: dict[str, str],
-    m: MacroBetaConfig,
+    m: MacroAlphaConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Run every indicator's gates and tally the evidence per (date, asset).
 
@@ -263,7 +269,7 @@ def _beta_channel(
 
         # Conditional betas: is the name levered in the regime that just fired?
         # These count regime days, not calendar days, so they need their own (much
-        # lower) min_periods — see MacroBetaConfig.conditional_min_periods_frac.
+        # lower) min_periods — see MacroAlphaConfig.conditional_min_periods_frac.
         cond_mp = max(2, int(round(window * m.conditional_min_periods_frac)))
         up = _conditional_beta(
             x, stock_ret, z >= m.conditional_z, window, cond_mp, stock_ret.index
@@ -329,16 +335,16 @@ def apply_filter(
     from ``loaders.load_macro_indicators``, and ``days`` the trading calendar the
     labels must land on. Returns a tidy frame with ``FILTER_COLUMNS``.
     """
-    m = cfg.macro_beta
+    m = cfg.macro_alpha
     if m.strategy not in STRATEGIES:
         raise ValueError(
-            f"unknown macro-beta strategy {m.strategy!r} — expected one of {STRATEGIES}"
+            f"unknown macro-alpha strategy {m.strategy!r} — expected one of {STRATEGIES}"
         )
 
     stock_ret = _stock_returns(daily, days)
     ind_ret, ind_z, sources = _indicator_panel(macro, days, m)
     log.info(
-        "macro-beta: %d indicators (%d FRED) | strategy=%s | z>=%.1f |beta|>%.1f",
+        "macro-alpha: %d indicators (%d FRED) | strategy=%s | z>=%.1f |beta|>%.1f",
         len(sources),
         sum(v == "fred" for v in sources.values()),
         m.strategy,
@@ -366,11 +372,11 @@ def apply_filter(
     )
 
     # --- Set algebra over the two channels -------------------------------------
-    if m.strategy == "own_minus_ind":
+    if m.strategy == "pure_alpha":
         selected, direction = own_trig & ~ind_trig, own_dir
-    elif m.strategy == "ind_minus_own":
+    elif m.strategy == "pure_beta":
         selected, direction = ind_trig & ~own_trig, ind_dir
-    else:  # intersection_own_ind — both fired, and both must agree
+    else:  # beta — both fired, and both must agree
         selected = own_trig & ind_trig
         direction = ind_dir.where(ind_dir.eq(own_dir), 0)
 
@@ -382,7 +388,7 @@ def apply_filter(
     # --- Tidy output -----------------------------------------------------------
     # Ranking score when the selected set has to be capped: the own leg has no
     # indicator count to rank on, so it ranks by how extreme the move was.
-    if m.strategy == "own_minus_ind":
+    if m.strategy == "pure_alpha":
         strength = own_z.abs().fillna(0.0)
     else:
         strength = n_trig.astype(float)
@@ -410,7 +416,7 @@ def apply_filter(
 
     fired = int((out["signal"] != HOLD).sum())
     log.info(
-        "macro-beta: %d/%d (asset, date) labels fired (%.1f%%) | BUY=%d SELL=%d",
+        "macro-alpha: %d/%d (asset, date) labels fired (%.1f%%) | BUY=%d SELL=%d",
         fired,
         len(out),
         100.0 * fired / max(len(out), 1),

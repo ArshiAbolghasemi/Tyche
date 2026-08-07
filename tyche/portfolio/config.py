@@ -236,7 +236,7 @@ class AlphaFilterConfig:
     )
     # Which indicator produces the BUY/SELL/HOLD labels:
     #   "imacd"      — continuous idiosyncratic MACD (features/daily.py::_imacd)
-    #   "macro_beta" — alpha-beta triggers off a macro panel (features/macro_beta.py)
+    #   "macro_alpha" — alpha-beta triggers off a macro panel (features/macro_alpha.py)
     # Both write the same [A, D] alpha_signal, so everything downstream is identical.
     indicator: str = field(
         default_factory=lambda: _env("TYCHE_PORTFOLIO_ALPHA_FILTER_INDICATOR", "imacd")
@@ -319,33 +319,35 @@ class AlphaFilterConfig:
 
 
 @dataclass(frozen=True)
-class MacroBetaConfig:
+class MacroAlphaConfig:
     """Alpha-beta stock filter: rolling betas to an exogenous macro panel.
 
     Ported from the ``zanista/`` research pipeline. Defaults reproduce the settings
     that produced its published results — 120-day betas (240 for FRED releases),
     2-sigma indicator triggers, unit thresholds on the plain and conditional betas.
-    See ``features/macro_beta.py`` and ``docs/macro-beta-filter.md``.
+    See ``features/macro_alpha.py`` and ``docs/macro-alpha-filter.md``.
     """
 
     # Which leg of the alpha/beta decomposition to trade:
-    #   "own_minus_ind"        — stock moved, no macro trigger. The pure-alpha leg,
+    #   "pure_alpha"        — stock moved, no macro trigger. The pure-alpha leg,
     #                            and the closest comparison to the I-MACD filter.
-    #   "ind_minus_own"        — factor moved and the name is levered to it, but the
+    #   "pure_beta"        — factor moved and the name is levered to it, but the
     #                            stock has not moved yet. The anticipatory beta leg.
-    #   "intersection_own_ind" — both fired and agree on direction.
+    #   "beta" — both fired and agree on direction.
     strategy: str = field(
         default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_MACRO_BETA_STRATEGY", "own_minus_ind"
+            "TYCHE_PORTFOLIO_MACRO_ALPHA_STRATEGY", "pure_alpha"
         )
     )
     # Rolling window for the market-model betas, in trading days. FRED releases are
     # monthly or quarterly, so they get a longer one.
     beta_window: int = field(
-        default_factory=lambda: _env("TYCHE_PORTFOLIO_MACRO_BETA_WINDOW", 120, int)
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_MACRO_ALPHA_WINDOW", 120, int)
     )
     fred_beta_window: int = field(
-        default_factory=lambda: _env("TYCHE_PORTFOLIO_MACRO_BETA_FRED_WINDOW", 240, int)
+        default_factory=lambda: _env(
+            "TYCHE_PORTFOLIO_MACRO_ALPHA_FRED_WINDOW", 240, int
+        )
     )
     # Fraction of the window that must be populated before a beta is emitted. 1.0 is
     # the research default; the shipped price panel starts 2023-10-02, so a full
@@ -354,7 +356,7 @@ class MacroBetaConfig:
     # a noisier estimate.
     beta_min_periods_frac: float = field(
         default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_MACRO_BETA_MIN_PERIODS_FRAC", 1.0, float
+            "TYCHE_PORTFOLIO_MACRO_ALPHA_MIN_PERIODS_FRAC", 1.0, float
         )
     )
     # Same, for the conditional betas — and this one *has* to be lower than 1.0.
@@ -367,58 +369,58 @@ class MacroBetaConfig:
     # exactly the stretch it traded.) 0.25 asks for 30 regime days instead.
     conditional_min_periods_frac: float = field(
         default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_MACRO_BETA_CONDITIONAL_MIN_PERIODS_FRAC", 0.25, float
+            "TYCHE_PORTFOLIO_MACRO_ALPHA_CONDITIONAL_MIN_PERIODS_FRAC", 0.25, float
         )
     )
     # Rolling window for the indicator's own return z-score, and for the stock's.
     z_window: int = field(
-        default_factory=lambda: _env("TYCHE_PORTFOLIO_MACRO_BETA_Z_WINDOW", 120, int)
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_MACRO_ALPHA_Z_WINDOW", 120, int)
     )
     own_z_window: int = field(
         default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_MACRO_BETA_OWN_Z_WINDOW", 120, int
+            "TYCHE_PORTFOLIO_MACRO_ALPHA_OWN_Z_WINDOW", 120, int
         )
     )
     # |z| required for a move to count as abnormal, on both channels.
     z_threshold: float = field(
         default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_MACRO_BETA_Z_THRESHOLD", 2.0, float
+            "TYCHE_PORTFOLIO_MACRO_ALPHA_Z_THRESHOLD", 2.0, float
         )
     )
     # The +/- sigma regime that defines the conditional betas.
     conditional_z: float = field(
         default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_MACRO_BETA_CONDITIONAL_Z", 1.0, float
+            "TYCHE_PORTFOLIO_MACRO_ALPHA_CONDITIONAL_Z", 1.0, float
         )
     )
     # |beta| and |beta_sigma+/-| gates.
     beta_threshold: float = field(
         default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_MACRO_BETA_BETA_THRESHOLD", 1.0, float
+            "TYCHE_PORTFOLIO_MACRO_ALPHA_BETA_THRESHOLD", 1.0, float
         )
     )
     conditional_beta_threshold: float = field(
         default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_MACRO_BETA_CONDITIONAL_BETA_THRESHOLD", 1.0, float
+            "TYCHE_PORTFOLIO_MACRO_ALPHA_CONDITIONAL_BETA_THRESHOLD", 1.0, float
         )
     )
     # Sessions a trigger stays live. Triggers are one-day events, so without a hold
     # a signal would rarely be live on a rebalance day. 0 means "use window.holding",
     # which keeps a trigger alive across exactly one rebalance period.
     hold_days: int = field(
-        default_factory=lambda: _env("TYCHE_PORTFOLIO_MACRO_BETA_HOLD_DAYS", 0, int)
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_MACRO_ALPHA_HOLD_DAYS", 0, int)
     )
     # The research code gates on |beta| but takes direction from the indicator's
     # z-score alone, so a +2 sigma factor move reads as bullish even for a name with
     # beta = -2. False reproduces that; True scores sign(beta) * z instead.
     use_beta_sign: bool = field(
         default_factory=lambda: _env(
-            "TYCHE_PORTFOLIO_MACRO_BETA_USE_BETA_SIGN", False, bool
+            "TYCHE_PORTFOLIO_MACRO_ALPHA_USE_BETA_SIGN", False, bool
         )
     )
     # Restrict to these indicator names (empty = every indicator in the panel).
     indicators: list[str] = field(
-        default_factory=lambda: _env_list("TYCHE_PORTFOLIO_MACRO_BETA_INDICATORS", [])
+        default_factory=lambda: _env_list("TYCHE_PORTFOLIO_MACRO_ALPHA_INDICATORS", [])
     )
 
 
@@ -602,7 +604,7 @@ class Config:
     universe: UniverseConfig = field(default_factory=UniverseConfig)
     daily: DailyFeatureConfig = field(default_factory=DailyFeatureConfig)
     alpha_filter: AlphaFilterConfig = field(default_factory=AlphaFilterConfig)
-    macro_beta: MacroBetaConfig = field(default_factory=MacroBetaConfig)
+    macro_alpha: MacroAlphaConfig = field(default_factory=MacroAlphaConfig)
     news: NewsFeatureConfig = field(default_factory=NewsFeatureConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
@@ -620,7 +622,7 @@ class Config:
 
     @property
     def filter_indicator(self) -> str:
-        """Which filter is active: ``imacd`` or ``macro_beta``."""
+        """Which filter is active: ``imacd`` or ``macro_alpha``."""
         return self.alpha_filter.indicator
 
     @property

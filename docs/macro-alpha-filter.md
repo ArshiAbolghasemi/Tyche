@@ -39,20 +39,27 @@ regime that just fired*. An indicator triggers a stock when all three hold:
 ## The three strategies
 
 Per `(asset, date)`, whether each channel fired gives three mutually exclusive legs,
-selected by `TYCHE_PORTFOLIO_MACRO_BETA_STRATEGY`:
+selected by `TYCHE_PORTFOLIO_MACRO_ALPHA_STRATEGY`:
 
-| strategy | fires when | reading |
-|---|---|---|
-| `own_minus_ind` | own ∧ ¬ind | stock moved with no macro trigger behind it — **the pure-alpha leg** |
-| `ind_minus_own` | ind ∧ ¬own | factor moved, name is levered, stock hasn't moved yet — the anticipatory beta leg |
-| `intersection_own_ind` | own ∧ ind | an abnormal move a factor the name is levered to explains |
+Writing `S_I` for the indicator-triggered set and `S_S` for the self-triggered set:
 
-`own_minus_ind` is the default: it is the leg that answers the same question as
+| strategy | set | fires when | reading |
+|---|---|---|---|
+| `pure_alpha` | `S_S \ S_I` | own ∧ ¬ind | stock moved significantly, independent of its broader sector — **the alpha leg** |
+| `pure_beta` | `S_I \ S_S` | ind ∧ ¬own | factor moved, name is levered, stock hasn't moved yet — the anticipatory beta leg |
+| `beta` | `S_I ∩ S_S` | own ∧ ind | an abnormal move a factor the name is levered to explains |
+
+`pure_alpha` is the default: it is the leg that answers the same question as
 I-MACD, which makes the two filters a like-for-like comparison.
+
+> **Two different "Pure Alpha"s.** This one is a *set difference* — a name qualifies
+> because no indicator fired, not because its return is uncorrelated with macro.
+> [Pure-Alpha Filter](pure-alpha-filter.md) is the I-MACD filter, which computes a
+> genuine regression residual. Same words, different mechanism.
 
 Direction follows the research code. A long needs *every* triggering indicator's
 z-score positive, a short needs every one negative, and mixed evidence yields HOLD.
-On the own leg the sign of the stock's own z-score decides; `intersection_own_ind`
+On the own leg the sign of the stock's own z-score decides; `beta`
 requires both channels to agree.
 
 ## The macro panel
@@ -79,44 +86,74 @@ window — FRED releases are monthly or quarterly and get 240 days rather than 1
 
 ## Running it
 
-```bash
-# One configuration first — confirm the filter earns the sweep
-./scripts/portfolio/macro_beta/student_t/gpt4o_mini.sh --holding 40
+The script tree is `<strategy>/<distribution>/<backend>.sh`:
 
-# Full grid for one backend/distribution
-./scripts/portfolio/macro_beta/student_t/gpt4o_mini.sh
-
-# Every backend x distribution
-./scripts/portfolio/macro_beta/all.sh
-
-# Trade the beta leg instead of the alpha leg
-STRATEGY=ind_minus_own ./scripts/portfolio/macro_beta/all.sh --holdings 40 60
-
-# Loosen the trigger
-Z_THRESHOLD=1.5 ./scripts/portfolio/macro_beta/student_t/finbert.sh --holding 40
+```
+scripts/portfolio/macro_alpha/
+├── all.sh                       every strategy x backend x distribution
+├── pure_alpha/
+│   ├── all.sh                   every backend x distribution
+│   ├── gaussian/{finbert,gpt4o_mini,llama2,mistral}.sh
+│   └── student_t/{finbert,gpt4o_mini,llama2,mistral}.sh
+├── pure_beta/   (same shape)
+└── beta/        (same shape)
 ```
 
-Artifacts land in `benchmark_macro_beta/<backend>/<distribution>/`, alongside
-`benchmark/` (baseline) and `benchmark_imacd/` (I-MACD arm), so the DVC-tracked
-baseline the reports cite is never overwritten.
+```bash
+# One configuration first — confirm the filter earns the sweep
+./scripts/portfolio/macro_alpha/pure_alpha/student_t/gpt4o_mini.sh --holding 40
+
+# Full holding/cost grid for one backend + distribution
+./scripts/portfolio/macro_alpha/pure_alpha/student_t/gpt4o_mini.sh
+
+# One strategy, every backend x distribution
+./scripts/portfolio/macro_alpha/pure_beta/all.sh
+./scripts/portfolio/macro_alpha/beta/all.sh
+
+# Everything — 3 strategies x 4 backends x 2 distributions x 8 holdings
+./scripts/portfolio/macro_alpha/all.sh --holding 40
+
+# Subset by env
+STRATEGIES="pure_alpha pure_beta" BACKENDS=finbert \
+  ./scripts/portfolio/macro_alpha/all.sh --holdings 40 60
+
+# Loosen the trigger, or bring the non-equity indicators into play
+Z_THRESHOLD=1.5    ./scripts/portfolio/macro_alpha/pure_beta/student_t/finbert.sh --holding 40
+BETA_THRESHOLD=0.3 ./scripts/portfolio/macro_alpha/pure_beta/all.sh --holding 40
+```
+
+Artifacts land in `benchmark_macro_alpha/<strategy>/<backend>/<distribution>/` —
+the strategy is part of the path, so the three legs never overwrite each other. For
+example:
+
+```
+benchmark_macro_alpha/pure_alpha/gpt4o_mini/student_t/portfolio_metrics.csv
+benchmark_macro_alpha/pure_beta/gpt4o_mini/student_t/portfolio_metrics.csv
+benchmark_macro_alpha/beta/gpt4o_mini/student_t/portfolio_metrics.csv
+```
+
+This sits alongside `benchmark/` (baseline) and `benchmark_imacd/` (I-MACD arm), so
+the DVC-tracked baseline the reports cite is never overwritten.
 
 ### The ablation
 
-The three arms train the same model on the same features and differ only in which
-names the allocator may hold, so differences in portfolio metrics are attributable
-to the filter:
+Every arm trains the same model on the same features and differs only in which names
+the allocator may hold, so differences in portfolio metrics are attributable to the
+filter:
 
 ```bash
-./scripts/portfolio/student_t/gpt4o_mini.sh            --holding 40  # no filter
-./scripts/portfolio/imacd/student_t/gpt4o_mini.sh      --holding 40  # I-MACD
-./scripts/portfolio/macro_beta/student_t/gpt4o_mini.sh --holding 40  # alpha-beta
+./scripts/portfolio/student_t/gpt4o_mini.sh                        --holding 40  # no filter
+./scripts/portfolio/imacd/student_t/gpt4o_mini.sh                  --holding 40  # I-MACD
+./scripts/portfolio/macro_alpha/pure_alpha/student_t/gpt4o_mini.sh --holding 40  # Pure Alpha
+./scripts/portfolio/macro_alpha/pure_beta/student_t/gpt4o_mini.sh  --holding 40  # Pure Beta
+./scripts/portfolio/macro_alpha/beta/student_t/gpt4o_mini.sh       --holding 40  # Beta
 ```
 
 ## Signal density and the holding period
 
 Triggers are one-day events — an indicator crosses 2 sigma and that is that — but the
 mask is read at every rebalance, so without an explicit hold a signal would almost
-never be live on a rebalance day. `MACRO_BETA_HOLD_DAYS` carries each label forward;
+never be live on a rebalance day. `MACRO_ALPHA_HOLD_DAYS` carries each label forward;
 `0` means "use `window.holding`", which keeps a trigger alive across exactly one
 rebalance period and therefore adapts across the holding sweep.
 
@@ -166,9 +203,9 @@ hit the same wall — its conditional betas only became finite in the last weeks
 ## What to expect in the logs
 
 ```
-macro-beta: 58 indicators (8 FRED) | strategy=own_minus_ind | z>=2.0 |beta|>1.0
+macro-beta: 58 indicators (8 FRED) | strategy=pure_alpha | z>=2.0 |beta|>1.0
 macro-beta: 978/11300 (asset, date) labels fired (8.7%) | BUY=520 SELL=458
-macro_beta filter: 412/1103 candidates fired in-sample, keeping 50 (cap=50) | ...
+macro_alpha filter: 412/1103 candidates fired in-sample, keeping 50 (cap=50) | ...
 alpha-filter mask | mode=buy_only empty_action=cash | selected per rebalance: ...
 ```
 
@@ -180,9 +217,9 @@ restricts the beta channel to index and sector factors.
 
 ## Configuration
 
-Every knob is under `TYCHE_PORTFOLIO_MACRO_BETA_*`, plus the shared
+Every knob is under `TYCHE_PORTFOLIO_MACRO_ALPHA_*`, plus the shared
 `TYCHE_PORTFOLIO_ALPHA_FILTER_*` mask settings. See `.env.example` for the annotated
-list and `tyche/portfolio/config.py::MacroBetaConfig` for defaults.
+list and `tyche/portfolio/config.py::MacroAlphaConfig` for defaults.
 
 ## Status and caveats
 
