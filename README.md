@@ -3,6 +3,8 @@
 Tyche is a two-stage research pipeline that turns raw financial news and market
 data into backtested portfolio allocations.
 
+![Tyche pipeline](docs/figures/pipeline.svg)
+
 1. **News-sentiment extraction** — an agentic pipeline (LangGraph + Azure OpenAI)
    ingests raw news, summarizes each article, scores financial sentiment, and
    neutralizes systematic bias to produce a clean per-(article, ticker) sentiment
@@ -34,6 +36,7 @@ Full walkthrough: [`docs/setup.md`](docs/setup.md).
 | --- | --- |
 | [Setup](docs/setup.md) | Environment, dependencies, `.env`, DVC-tracked data |
 | [News Sentiment Pipeline](docs/news-pipeline.md) | The agent DAG that turns raw news into a sentiment contract |
+| [LLM Serving](docs/setup.md#4-serve-the-sentiment-models-you-want-to-test) | Local vLLM compose files for Mistral-7B-Instruct and Llama-2-13B-chat |
 | [Data & Features](docs/data-features.md) | Universe, calendar, feature branches, windowing/splits |
 | [Pure-Alpha Filter](docs/pure-alpha-filter.md) | The I-MACD indicator and the BUY/SELL/HOLD stock filter built on it |
 | [Alpha-Beta Filter](docs/macro-alpha-filter.md) | The macro-beta trigger strategy, as a second interchangeable stock filter |

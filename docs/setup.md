@@ -72,14 +72,13 @@ model server. Which backends run is chosen with `TYCHE_SENTIMENT_BACKENDS` (see
 | --- | --- | --- |
 | `gpt4o_mini` | Hosted Azure OpenAI call | `TYCHE_SENTIMENT_AZURE_API_KEY` |
 | `finbert` | HF weights loaded in-process onto CPU/CUDA/MPS | nothing — weights download on first use |
-| `mistral_7b_instruct` | Local OpenAI-compatible HTTP server | start the `mistral` container below |
-| `llama2_13b_chat` | Local OpenAI-compatible HTTP server | start the `llama2` container below |
+| `mistral_7b_instruct` | Local OpenAI-compatible HTTP server | start `llm-serve/mistral_7b_instruct.yaml` |
+| `llama2_13b_chat` | Local OpenAI-compatible HTTP server | start `llm-serve/llama2_13b_chat.yaml` |
 
 The two generative backends are *not* loaded in-process: they talk to a local
 OpenAI-compatible endpoint over HTTP, exactly the way `gpt4o_mini` talks to
-Azure. `docker-compose.sentiment-llms.yml` at the repo root brings up those
-endpoints as vLLM servers, each serving an AWQ-quantized checkpoint with bf16
-compute.
+Azure. The compose files under `llm-serve/` bring up those endpoints as vLLM
+servers, each serving an AWQ-quantized checkpoint with bf16 compute.
 
 ### Start the servers
 
@@ -87,22 +86,28 @@ Requires an NVIDIA GPU and the NVIDIA Container Toolkit on the host. Run from
 the repo root so the root `.env` is picked up.
 
 ```bash
-# Both, or just the one you're testing
-docker compose -f docker-compose.sentiment-llms.yml up -d
-docker compose -f docker-compose.sentiment-llms.yml up -d mistral
-docker compose -f docker-compose.sentiment-llms.yml up -d llama2
+# Start one model
+docker compose -f llm-serve/mistral_7b_instruct.yaml up -d
+docker compose -f llm-serve/llama2_13b_chat.yaml up -d
+
+# Or start both model files in one compose project
+docker compose \
+  -f llm-serve/mistral_7b_instruct.yaml \
+  -f llm-serve/llama2_13b_chat.yaml \
+  up -d
 
 # First start downloads several GB of weights — watch until the health check passes
-docker compose -f docker-compose.sentiment-llms.yml logs -f
-docker compose -f docker-compose.sentiment-llms.yml ps
+docker compose -f llm-serve/mistral_7b_instruct.yaml logs -f
+docker compose -f llm-serve/llama2_13b_chat.yaml ps
 
-docker compose -f docker-compose.sentiment-llms.yml down
+docker compose -f llm-serve/mistral_7b_instruct.yaml down
+docker compose -f llm-serve/llama2_13b_chat.yaml down
 ```
 
-| Service | Serves | Published at | `--served-model-name` |
-| --- | --- | --- | --- |
-| `mistral` | `TheBloke/Mistral-7B-Instruct-v0.2-AWQ` | `http://localhost:8001/v1` | `mistral-7b-instruct` |
-| `llama2` | `TheBloke/Llama-2-13B-chat-AWQ` | `http://localhost:8002/v1` | `llama2-13b-chat` |
+| Compose file | Service | Serves | Published at | `--served-model-name` |
+| --- | --- | --- | --- | --- |
+| `llm-serve/mistral_7b_instruct.yaml` | `mistral_7b_instruct` | `TheBloke/Mistral-7B-Instruct-v0.2-AWQ` | `http://localhost:8001/v1` | `mistral-7b-instruct` |
+| `llm-serve/llama2_13b_chat.yaml` | `llama2_13b_chat` | `TheBloke/Llama-2-13B-chat-AWQ` | `http://localhost:8002/v1` | `llama2-13b-chat` |
 
 These match `TYCHE_SENTIMENT_MISTRAL_BASE_URL` / `_MODEL` and
 `TYCHE_SENTIMENT_LLAMA2_BASE_URL` / `_MODEL` out of the box — if you change a

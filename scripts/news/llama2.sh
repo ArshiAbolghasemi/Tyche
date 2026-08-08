@@ -2,7 +2,7 @@
 #
 # Score the news feed with Llama-2-13B-chat (local vLLM server, AWQ + bf16).
 # Gated checkpoint: accept the license on the Hub and set HF_TOKEN in .env, then:
-#   docker compose -f docker-compose.sentiment-llms.yml up -d llama2
+#   docker compose -f llm-serve/llama2_13b_chat.yaml up -d
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."

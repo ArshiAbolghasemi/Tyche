@@ -2,7 +2,7 @@
 #
 # Score the news feed with Mistral-7B-Instruct (local vLLM server, AWQ + bf16).
 # Start it first:
-#   docker compose -f docker-compose.sentiment-llms.yml up -d mistral
+#   docker compose -f llm-serve/mistral_7b_instruct.yaml up -d
 
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."

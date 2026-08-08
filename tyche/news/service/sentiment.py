@@ -6,9 +6,8 @@ Backends
     Azure OpenAI ``gpt-4o-mini``.
 ``mistral_7b_instruct`` / ``llama2_13b_chat``
     Local OpenAI-compatible chat endpoints — Ollama, or vLLM's OpenAI server serving
-    a quantized, bf16-compute checkpoint (see ``docker-compose.sentiment-llms.yml``
-    at the repo root). Which one is in use is purely a matter of ``base_url`` and
-    ``model``.
+    a quantized, bf16-compute checkpoint (see ``llm-serve/*.yaml``). Which one is
+    in use is purely a matter of ``base_url`` and ``model``.
 ``finbert``
     Local HF sequence-classification checkpoints (3-class pos/neg/neu head), loaded
     directly onto a local device (CPU/CUDA/MPS) — no API call, no prompt.
@@ -328,7 +327,7 @@ class AzureGpt4oMiniBackend(ChatCompletionsSentimentBackend):
 
 class LocalOpenAICompatibleBackend(ChatCompletionsSentimentBackend):
     """A local OpenAI-compatible chat endpoint (Ollama, or vLLM's OpenAI server —
-    see ``docker-compose.sentiment-llms.yml`` at the repo root).
+    see ``llm-serve/*.yaml``).
 
     Structured output is requested by JSON schema rather than tool-calling:
     Llama-2-chat has no native tool-calling support (unlike Llama 3.1+), while

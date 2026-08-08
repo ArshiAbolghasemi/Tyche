@@ -298,7 +298,7 @@ class FinbertConfig:
 @dataclass(frozen=True)
 class Mistral7BInstructConfig:
     """Local Mistral-7B-Instruct sentiment backend — an OpenAI-compatible chat
-    endpoint (see docker-compose.sentiment-llms.yml), scored the exact same way as
+    endpoint (see ``llm-serve/mistral_7b_instruct.yaml``), scored the exact same way as
     ``AzureSentimentConfig``: a fixed system prompt sent with every call, parsed
     via LangChain structured output.
     """
@@ -352,7 +352,7 @@ class Mistral7BInstructConfig:
 @dataclass(frozen=True)
 class Llama2ChatConfig:
     """Local Llama-2-13B-chat sentiment backend — an OpenAI-compatible chat
-    endpoint (see docker-compose.sentiment-llms.yml), scored the exact same way as
+    endpoint (see ``llm-serve/llama2_13b_chat.yaml``), scored the exact same way as
     ``AzureSentimentConfig``: a fixed system prompt sent with every call, parsed
     via LangChain structured output.
     """
