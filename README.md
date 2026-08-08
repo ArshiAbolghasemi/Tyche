@@ -3,7 +3,9 @@
 Tyche is a two-stage research pipeline that turns raw financial news and market
 data into backtested portfolio allocations.
 
-![Tyche pipeline](docs/figures/pipeline.svg)
+<div style="background:white; padding:12px;">
+  <img src="docs/figures/pipeline.svg" alt="Tyche pipeline">
+</div>
 
 1. **News-sentiment extraction** — an agentic pipeline (LangGraph + Azure OpenAI)
    ingests raw news, summarizes each article, scores financial sentiment, and
