@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tyche.news.config import NewsSettings, settings as news_settings
-from tyche.portfolio.config import Config as PortfolioConfig, default_config
+from tyche.news.config import NewsSettings
+from tyche.news.config import settings as news_settings
+from tyche.portfolio.config import Config as PortfolioConfig
+from tyche.portfolio.config import default_config
 
 
 @dataclass

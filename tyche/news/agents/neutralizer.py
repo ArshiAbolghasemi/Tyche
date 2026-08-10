@@ -18,8 +18,8 @@ import numpy as np
 import pandas as pd
 from sortedcontainers import SortedList
 
-from tyche.news.config import settings
 from tyche.common.logging import get_logger
+from tyche.news.config import settings
 from tyche.news.records import (
     Aggregate,
     Article,
@@ -162,9 +162,9 @@ def neutralize(aggregated: pd.DataFrame) -> pd.DataFrame:
     floor = float(settings.neutralizer.std_floor)
     min_members = int(settings.neutralizer.group_min_members)
     final = pd.Series(0.0, index=df.index)
-    for _, idx in df.groupby(
+    for idx in df.groupby(
         [Neutralize.trading_day, Article.group_key], sort=False
-    ).groups.items():
+    ).groups.values():
         vals = df.loc[idx, "_s1"]
         if len(idx) < min_members:
             final.loc[idx] = vals

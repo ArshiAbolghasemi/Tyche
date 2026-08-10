@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Tyche CLI + pipeline entrypoint — agentic FinBERT news-sentiment extraction.
 
     uv run python -m tyche.news.sentiment_pipeline run  [--input PATH] [--output PATH] [--limit N]
@@ -12,11 +13,9 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
-from tyche.news.config import settings
 from tyche.common.logging import configure_logging, get_logger
 from tyche.news.agents import (
     auditor,
@@ -25,21 +24,20 @@ from tyche.news.agents import (
     scorer,
     summarizer,
 )
+from tyche.news.config import settings
 from tyche.news.graph import build_graph
 from tyche.news.records import OUTPUT_COLUMNS, backend_score_columns
 
 log = get_logger("tyche.main")
 
 
-def _ingest_limited(input_path: Optional[str], limit: Optional[int]) -> pd.DataFrame:
+def _ingest_limited(input_path: str | None, limit: int | None) -> pd.DataFrame:
     # Cap the source read so the multi-GB feed is never fully loaded; limit is the
     # number of source articles (a row explodes into one row per ticker).
     return ingest.ingest(input_path, nrows=limit)
 
 
-def _write_contract(
-    neutralized: pd.DataFrame, output_path: Optional[str]
-) -> pd.DataFrame:
+def _write_contract(neutralized: pd.DataFrame, output_path: str | None) -> pd.DataFrame:
     # Every configured sentiment backend gets its own <backend>_-prefixed columns
     # (see tyche.news.agents.scorer); the primary backend's copy already rides along
     # via OUTPUT_COLUMNS's canonical agg_p_pos/raw_score/... columns.
@@ -58,9 +56,9 @@ def _write_contract(
 
 
 def run(
-    input_path: Optional[str] = None,
-    output_path: Optional[str] = None,
-    limit: Optional[int] = None,
+    input_path: str | None = None,
+    output_path: str | None = None,
+    limit: int | None = None,
 ) -> pd.DataFrame:
     """Score a news file end-to-end. Returns the contract frame and writes parquet."""
     auditor.audit_a()  # startup guard — halts before scoring if the model is wrong

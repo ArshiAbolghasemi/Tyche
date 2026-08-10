@@ -34,8 +34,8 @@ from datetime import datetime, timezone
 import dask.dataframe as dd
 import pandas as pd
 
-from tyche.news.config import settings
 from tyche.common.logging import get_logger
+from tyche.news.config import settings
 from tyche.news.records import Article, Summary
 
 log = get_logger(__name__)

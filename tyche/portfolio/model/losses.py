@@ -9,6 +9,7 @@ given Sigma_A = L L^T, the quadratic form uses a triangular solve and log|Sigma_
 from __future__ import annotations
 
 import torch
+
 from tyche.portfolio.model.network import Prediction
 
 _LOG_2PI = 1.8378770664093453

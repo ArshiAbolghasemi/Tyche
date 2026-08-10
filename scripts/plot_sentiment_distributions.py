@@ -63,7 +63,6 @@ from tyche.common.figures import (
     write_table,
 )
 
-
 CLASSES = ("positive", "negative", "neutral")
 CLASS_LABELS = {"positive": "Positive", "negative": "Negative", "neutral": "Neutral"}
 # Identity of a scored row. article_id is near-unique on its own; the ticker is

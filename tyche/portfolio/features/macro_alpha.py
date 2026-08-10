@@ -129,7 +129,7 @@ def _rolling_beta(
     xb = valid.mul(x.fillna(0.0), axis=0)  # x on valid pairs, 0 elsewhere
     yb = y.fillna(0.0).where(valid, 0.0)
 
-    roll = dict(window=window, min_periods=min_periods)
+    roll = {"window": window, "min_periods": min_periods}
     n = valid.rolling(**roll).sum()
     sx = xb.rolling(**roll).sum()
     sy = yb.rolling(**roll).sum()
@@ -258,7 +258,7 @@ def _beta_channel(
     for name in ind_ret.columns:
         x, z = ind_ret[name], ind_z[name]
         window = m.fred_beta_window if sources[name] == "fred" else m.beta_window
-        min_periods = max(2, int(round(window * m.beta_min_periods_frac)))
+        min_periods = max(2, round(window * m.beta_min_periods_frac))
 
         fired = z.abs() >= m.z_threshold
         if not bool(fired.any()):
@@ -270,7 +270,7 @@ def _beta_channel(
         # Conditional betas: is the name levered in the regime that just fired?
         # These count regime days, not calendar days, so they need their own (much
         # lower) min_periods — see MacroAlphaConfig.conditional_min_periods_frac.
-        cond_mp = max(2, int(round(window * m.conditional_min_periods_frac)))
+        cond_mp = max(2, round(window * m.conditional_min_periods_frac))
         up = _conditional_beta(
             x, stock_ret, z >= m.conditional_z, window, cond_mp, stock_ret.index
         )

@@ -25,10 +25,10 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
-from tyche.news.config import settings
 from tyche.common.device import resolve_device
 from tyche.common.hf_loading import load_with_retry, release_device_memory
 from tyche.common.logging import get_logger
+from tyche.news.config import settings
 
 log = get_logger(__name__)
 
@@ -97,7 +97,7 @@ def get_embedding_revision() -> str:
     try:
         info = HfApi().model_info(name, revision=revision)
         return info.sha or revision
-    except Exception:  # pragma: no cover - offline / hub error
+    except Exception:  # pragma: no cover - offline / hub error  # noqa: BLE001
         return revision
 
 

@@ -500,13 +500,13 @@ class NewsSettings(Dynaconf):
 
     def __init__(self, **kwargs):
         env = os.environ.get("TYCHE_ENV", "development").lower()
-        merged = dict(
-            settings_files=[],
-            environments=True,
-            env=env,
-            envvar_prefix="TYCHE",
-            load_dotenv=True,
-        )
+        merged = {
+            "settings_files": [],
+            "environments": True,
+            "env": env,
+            "envvar_prefix": "TYCHE",
+            "load_dotenv": True,
+        }
         merged.update(kwargs)
         super().__init__(**merged)
 

@@ -18,12 +18,12 @@ from tyche.portfolio.allocation.black_litterman import (
     black_litterman_posterior,
     black_litterman_weights,
 )
-from tyche.portfolio.config import Config
 from tyche.portfolio.allocation.optimizer import optimize_weights
 from tyche.portfolio.allocation.risk_parity import (
     hierarchical_risk_parity_weights,
     risk_parity_weights,
 )
+from tyche.portfolio.config import Config
 
 MomentForecasts = Mapping[int, tuple[np.ndarray, np.ndarray]]
 

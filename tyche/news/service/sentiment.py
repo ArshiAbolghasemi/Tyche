@@ -37,7 +37,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
+from functools import cache
 from typing import Any
 
 import torch
@@ -113,7 +113,7 @@ class SentimentProbabilities(BaseModel):
         return max(0.0, float(v))
 
     @model_validator(mode="after")
-    def _renormalize(self) -> "SentimentProbabilities":
+    def _renormalize(self) -> SentimentProbabilities:
         total = self.p_positive + self.p_negative + self.p_neutral
         if total <= 0:
             self.p_positive, self.p_negative, self.p_neutral = 0.0, 0.0, 1.0
@@ -517,7 +517,7 @@ def _backend_config(key: str):
     }[key]
 
 
-@lru_cache(maxsize=None)
+@cache
 def get_backend(key: str) -> SentimentBackend:
     """Return the (singleton, lazily-loaded) backend for ``key``."""
     if key == "gpt4o_mini":

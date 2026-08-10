@@ -14,8 +14,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from tyche.portfolio.data.assemble import AlignedData
 from tyche.portfolio.config import Config
+from tyche.portfolio.data.assemble import AlignedData
 
 
 @dataclass
@@ -50,7 +50,7 @@ def day_labels(days: pd.DatetimeIndex, cfg: Config) -> list[str | None]:
     test_hi = pd.Timestamp(s.test_end, tz="UTC")
 
     in_sample = np.flatnonzero((days >= in_lo) & (days <= in_hi))
-    n_train = int(round(len(in_sample) * s.train_fraction))
+    n_train = round(len(in_sample) * s.train_fraction)
     train_pos = set(in_sample[:n_train].tolist())
     val_pos = set(in_sample[n_train:].tolist())
 

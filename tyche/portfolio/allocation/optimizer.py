@@ -34,7 +34,9 @@ def optimize_weights(
             )
         ef.max_quadratic_utility(risk_aversion=cfg.bl_risk_aversion)
         weights = ef.clean_weights()
-    except Exception:
+    except Exception:  # noqa: BLE001 - cvxpy/scipy raise a wide, unstable set on an
+        # infeasible or ill-conditioned problem; any of them means "no solution",
+        # and equal weights is the documented fallback.
         return equal
 
     w = np.array([weights[i] for i in range(n)], dtype=float)

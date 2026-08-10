@@ -27,12 +27,12 @@ import torch
 from torch.utils.data import DataLoader
 
 from tyche.common.logging import get_logger
-from tyche.portfolio.data.assemble import AlignedData
 from tyche.portfolio.config import Config
+from tyche.portfolio.data.assemble import AlignedData
+from tyche.portfolio.data.windows import Sample
 from tyche.portfolio.model.dataset import WindowDataset
 from tyche.portfolio.model.losses import distribution_nll
 from tyche.portfolio.model.network import MultimodalReturnModel, Prediction
-from tyche.portfolio.data.windows import Sample
 
 log = get_logger(__name__)
 

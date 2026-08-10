@@ -15,9 +15,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from tyche.news.config import settings
 from tyche.common.logging import get_logger
 from tyche.news.agents import scorer, summarizer
+from tyche.news.config import settings
 from tyche.news.records import (
     Aggregate,
     Article,

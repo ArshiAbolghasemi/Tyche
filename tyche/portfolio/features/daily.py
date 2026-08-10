@@ -8,7 +8,7 @@ Raw prices are avoided in favor of returns, ranges, and ratios.
 
 from __future__ import annotations
 
-from functools import lru_cache
+from functools import cache
 
 import numpy as np
 import pandas as pd
@@ -69,7 +69,7 @@ def _ema(x: pd.Series, span: int) -> pd.Series:
     return x.ewm(span=span, adjust=False, min_periods=span).mean()
 
 
-@lru_cache(maxsize=None)
+@cache
 def _imacd_scale(fast: int, slow: int, signal: int) -> float:
     """L2 norm of the impulse response of ``residual -> MACD histogram``.
 

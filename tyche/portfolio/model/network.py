@@ -16,8 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
 
 from tyche.portfolio.config import ModelConfig
 from tyche.portfolio.model.encoders import SequenceConvEncoder

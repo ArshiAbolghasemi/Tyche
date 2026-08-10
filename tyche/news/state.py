@@ -7,13 +7,13 @@ key simply replace it.
 
 from __future__ import annotations
 
-from typing import Optional, TypedDict
+from typing import TypedDict
 
 import pandas as pd
 
 
 class PipelineState(TypedDict, total=False):
-    input_path: Optional[str]
+    input_path: str | None
     ingested: pd.DataFrame
     summarized: pd.DataFrame
     scored: pd.DataFrame

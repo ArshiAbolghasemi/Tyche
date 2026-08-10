@@ -46,14 +46,14 @@ from functools import lru_cache
 
 import pandas as pd
 import torch
+from huggingface_hub import HfApi
 from tqdm import tqdm
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-from huggingface_hub import HfApi
 
-from tyche.news.config import settings
 from tyche.common.device import resolve_device
 from tyche.common.hf_loading import load_with_retry, release_device_memory
 from tyche.common.logging import get_logger
+from tyche.news.config import settings
 from tyche.news.records import Article, Summary
 from tyche.news.service.embedder import get_tokenizer as get_embedding_tokenizer
 
@@ -124,7 +124,7 @@ def get_summarizer_revision() -> str:
     try:
         info = HfApi().model_info(name, revision=revision)
         return info.sha or revision
-    except Exception:  # pragma: no cover - offline / hub error
+    except Exception:  # pragma: no cover - offline / hub error  # noqa: BLE001
         return revision
 
 

@@ -12,8 +12,7 @@ support.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -21,16 +20,16 @@ import pandas as pd
 from tyche.common.logging import get_logger
 from tyche.portfolio.config import Config
 from tyche.portfolio.data.calendar import trading_days as _trading_days
-from tyche.portfolio.features import macro_alpha as _macro_alpha
-from tyche.portfolio.features.alpha_filter import BUY, SELL, apply_filter
-from tyche.portfolio.features.daily import build_daily_features, daily_features
-from tyche.portfolio.features.news import build_news_features, NEWS_FEATURES
 from tyche.portfolio.data.loaders import (
     load_daily,
     load_macro_indicators,
     load_news_sentiment,
 )
 from tyche.portfolio.data.universe import resolve_universe
+from tyche.portfolio.features import macro_alpha as _macro_alpha
+from tyche.portfolio.features.alpha_filter import BUY, SELL, apply_filter
+from tyche.portfolio.features.daily import build_daily_features, daily_features
+from tyche.portfolio.features.news import NEWS_FEATURES, build_news_features
 
 log = get_logger(__name__)
 

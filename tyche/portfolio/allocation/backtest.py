@@ -18,15 +18,15 @@ rather than silently freezing the weights.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
 import pandas as pd
 
 from tyche.portfolio.allocation.costs import net_holding_return
-from tyche.portfolio.config import Config
 from tyche.portfolio.allocation.history import simple_returns
+from tyche.portfolio.config import Config
 
 # A strategy maps a rebalance day index -> target weight vector [N].
 Strategy = Callable[[int], np.ndarray]

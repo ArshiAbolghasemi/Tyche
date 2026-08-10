@@ -25,8 +25,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from tyche.news.config import settings
 from tyche.common.logging import get_logger
+from tyche.news.config import settings
 from tyche.news.records import (
     Aggregate,
     Article,

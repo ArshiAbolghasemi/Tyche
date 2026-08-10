@@ -149,7 +149,9 @@ def _load_embedding_cache(path: Path) -> dict[str, np.ndarray]:
         cache = np.load(path, allow_pickle=True)
         texts = [str(t) for t in cache["texts"].tolist()]
         embeddings = cache["embeddings"].astype(np.float32)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - a corrupt or truncated cache can fail
+        # in numpy, pickle or codec territory; every one of them is recoverable by
+        # rebuilding the cache from scratch.
         log.warning("could not load news embedding cache %s: %s", path, exc)
         return {}
     if len(texts) != len(embeddings):
@@ -215,7 +217,7 @@ def _representative_window_features(
         cfg.news.dedup_similarity_batch_size,
     )
     scores = window.loc[keep, "sentiment_final"].astype(float)
-    return float(scores.mean()), int(len(scores))
+    return float(scores.mean()), len(scores)
 
 
 def _effective_publication_day(ts: pd.Series, cfg: Config) -> pd.DatetimeIndex:
@@ -308,7 +310,7 @@ def _aggregate_selection_windows(
                     )
                 else:
                     scores = window["sentiment_final"].astype(float)
-                    mean_sent, n_articles = float(scores.mean()), int(len(scores))
+                    mean_sent, n_articles = float(scores.mean()), len(scores)
                 total_representatives += n_articles
                 rows.append(
                     {

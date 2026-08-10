@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import gc
 import os
-from typing import Callable, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 
 import torch
 from tenacity import (

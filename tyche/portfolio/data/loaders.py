@@ -12,7 +12,6 @@ import pandas as pd
 from tyche.portfolio.config import Config
 from tyche.portfolio.data.universe import to_canonical
 
-
 _NEWS_COLUMNS = ["name", "sentiment_final", "summary_text"]
 # Publication-time column, in priority order: feeds that keep their own ``date``
 # column are read from that; otherwise the pipeline's normalized ``valid_time``.

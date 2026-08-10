@@ -13,15 +13,15 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.utils.data import DataLoader
 
 from tyche.common.device import resolve_device
 from tyche.common.logging import get_logger
 from tyche.portfolio.data.assemble import AlignedData
+from tyche.portfolio.data.windows import Sample
 from tyche.portfolio.model.dataset import WindowDataset
 from tyche.portfolio.model.network import MultimodalReturnModel
-from tyche.portfolio.data.windows import Sample
 
 log = get_logger(__name__)
 
@@ -50,14 +50,14 @@ class Predictions:
         )
 
     @staticmethod
-    def load(path: Path) -> "Predictions":
+    def load(path: Path) -> Predictions:
         z = np.load(path, allow_pickle=True)
         cov = z["cov"]
         return Predictions(
             decision_t=z["decision_t"],
             mu=z["mu"],
             cov=cov,
-            aleatoric_cov=(z["aleatoric_cov"] if "aleatoric_cov" in z else cov),
+            aleatoric_cov=(z.get("aleatoric_cov", cov)),
             epistemic_cov=(
                 z["epistemic_cov"] if "epistemic_cov" in z else np.zeros_like(cov)
             ),
