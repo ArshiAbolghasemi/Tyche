@@ -9,10 +9,12 @@ selection arm produced it::
 
 and answers three questions, in this order:
 
-1. *Does stock selection help at all?*  Figures 1-4 and 7 average over the
-   allocation model and the sentiment backend and contrast the four selection arms
-   — Universal, Pure Alpha, Pure Beta, Beta — on Sharpe, on the risk/return plane,
-   across holding periods, across transaction costs, and on the cumulative path.
+1. *Which selection arm wins?*  Figures 1-4 and 7 average over the allocation
+   model and the sentiment backend and contrast the three filtered selection arms
+   — Pure Alpha, Pure Beta, Beta — on Sharpe, on the risk/return plane, across
+   holding periods, across transaction costs, and on the cumulative path. The
+   unfiltered ``universal`` arm is not drawn; the sentiment-free naive baselines
+   in ``benchmark/naive/`` are what every arm is measured against instead.
 2. *Within an arm, which allocator wins?*  Figures 5 and 8 fix the selection arm
    and contrast EW / RP / HRP / MVO / BL / Bayesian-BL.
 3. *Does the sentiment source matter?*  Figure 6 holds the selection arm fixed and
@@ -64,14 +66,16 @@ from matplotlib.lines import Line2D
 
 from tyche.common.figures import (
     COL_WIDTH,
-    SURFACE,
     DISTRIBUTIONS,
     FULL_WIDTH,
     INK_FAINT,
     INK_SOFT,
+    SELECTION_LABELS,
+    SELECTIONS,
     SENTIMENT_BACKENDS,
     SENTIMENT_COLORS,
     SENTIMENT_LABELS,
+    SURFACE,
     axes_title,
     figure_title,
     percent_axis,
@@ -82,25 +86,19 @@ from tyche.common.figures import (
 )
 
 # --- Vocabulary ---------------------------------------------------------------
+# ``SELECTIONS`` / ``SELECTION_LABELS`` are shared with ``plot_benchmark_figures``;
+# the styling below is local because only this script draws an arm as a series.
 # Display order is fixed everywhere: an arm keeps its colour, dash and marker no
-# matter which figure it appears in. Universal leads because it is the control.
-SELECTIONS: tuple[str, ...] = ("universal", "pure_alpha", "pure_beta", "beta")
-SELECTION_LABELS = {
-    "universal": "Universal (no filter)",
-    "pure_alpha": r"Pure Alpha  $S_S \setminus S_I$",
-    "pure_beta": r"Pure Beta  $S_I \setminus S_S$",
-    "beta": r"Beta  $S_I \cap S_S$",
-}
-# Four hues validated together as a set (OKLab ΔE, adjacent and all-pairs) against
+# matter which figure it appears in. Pure Alpha leads because it is the thesis.
+#
+# Three hues validated together as a set (OKLab ΔE, adjacent and all-pairs) against
 # the print surface, deliberately distinct from the sentiment palette so a reader
 # flipping between figures never confuses an arm with a backend. The all-pairs
 # teal/crimson gap sits in the 6-8 floor band, which is legal only alongside the
 # secondary encodings below — hence the dashes and markers, which are not optional.
-SELECTION_COLORS = dict(zip(SELECTIONS, ("#5b4bbd", "#c2255c", "#d98200", "#008f8c")))
-SELECTION_DASHES = dict(
-    zip(SELECTIONS, [(None, None), (4, 1.5), (1, 1.4), (6, 1.5, 1, 1.5)])
-)
-SELECTION_MARKERS = dict(zip(SELECTIONS, ("o", "s", "^", "D")))
+SELECTION_COLORS = dict(zip(SELECTIONS, ("#c2255c", "#d98200", "#008f8c")))
+SELECTION_DASHES = dict(zip(SELECTIONS, [(None, None), (4, 1.5), (1, 1.4)]))
+SELECTION_MARKERS = dict(zip(SELECTIONS, ("o", "s", "^")))
 
 PORTFOLIO_MODELS: tuple[str, ...] = ("EW", "RP", "HRP", "MVO", "BL", "Bayesian_BL")
 MODEL_LABELS = {
@@ -142,9 +140,11 @@ def load_selection_metrics(root: Path) -> pd.DataFrame:
     """Every selection arm's ``cost_portfolio_metrics.csv`` in one tidy frame.
 
     The tree is globbed rather than enumerated, so an arm that has not been run
-    is simply absent and a partial benchmark still plots. Runs written before the
-    distribution subdirectory existed sit one level higher; those are labelled
-    ``unspecified`` rather than guessed at, so nothing is silently mislabelled.
+    is simply absent and a partial benchmark still plots. Anything outside
+    ``SELECTIONS`` is dropped, which is what keeps a ``benchmark/universal/`` tree
+    from an earlier run out of the figures. Runs written before the distribution
+    subdirectory existed sit one level higher; those are labelled ``unspecified``
+    rather than guessed at, so nothing is silently mislabelled.
     """
     frames = []
     for path in sorted(root.glob("*/*/**/cost_portfolio_metrics.csv")):
@@ -499,7 +499,7 @@ def fig_risk_return(
         # Buy & hold and rebalanced EW land almost on top of each other, so the
         # labels are fanned vertically rather than left to overprint.
         fan = {"BuyHold_EW": -11, "EW_rebalanced": 7, "Russell2000": -3}
-        for name in NAIVE_LABELS:
+        for name, label in NAIVE_LABELS.items():
             rows = naive[naive["model"] == name]
             if rows.empty:
                 continue
@@ -516,7 +516,7 @@ def fig_risk_return(
                 zorder=4,
             )
             ax.annotate(
-                NAIVE_LABELS[name],
+                label,
                 point,
                 textcoords="offset points",
                 xytext=(7, fan[name]),
@@ -662,7 +662,7 @@ def _sweep(
             ax.set_xscale("log")
         else:
             ax.set_xscale("symlog", linthresh=min(positive) if positive else 1)
-        ax.set_xlim(ticks[0] if ticks[0] > 0 else 0, ticks[-1] * 1.08)
+        ax.set_xlim(max(0, ticks[0]), ticks[-1] * 1.08)
     ax.set_xticks(ticks)
     ax.get_xaxis().set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:g}"))
     ax.get_xaxis().set_minor_formatter(plt.NullFormatter())
@@ -906,7 +906,7 @@ def fig_paths(
     # they are clipped to the arms' window and re-based to zero there.
     start = min((c.index[0] for c in [blend(curves[a]) for a in curves]), default=None)
     fan = {"BuyHold_EW": -7, "EW_rebalanced": 7, "Russell2000": 0}
-    for name in NAIVE_LABELS:
+    for name, label in NAIVE_LABELS.items():
         series = naive_curve(root, holding, name)
         if series is None:
             continue
@@ -923,7 +923,7 @@ def fig_paths(
             zorder=1,
         )
         ax.annotate(
-            NAIVE_LABELS[name],
+            label,
             (series.index[-1], series.iloc[-1] - 1.0),
             textcoords="offset points",
             xytext=(3, fan[name]),

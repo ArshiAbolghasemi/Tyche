@@ -3,19 +3,24 @@
 
 Reads the artefacts written by ``tyche.portfolio.run`` (see ``scripts/portfolio/``)::
 
-    benchmark/<sentiment>/<distribution>/cost_portfolio_metrics.csv
-    benchmark/<sentiment>/<distribution>/equity_curves_C<cost_bps>_H<holding>.csv
+    benchmark/<arm>/<sentiment>/<distribution>/cost_portfolio_metrics.csv
+    benchmark/<arm>/<sentiment>/<distribution>/equity_curves_C<cost_bps>_H<holding>.csv
 
 and writes vector figures plus CSV tables behind them, for **every**
-combination the benchmark contains — each sentiment backend, return distribution,
-transaction cost, and holding period — organised as::
+combination the benchmark contains — each selection arm, sentiment backend, return
+distribution, transaction cost, and holding period — organised as::
 
-    <outdir>/<distribution>/C<cost>_H<holding>/fig1_paths_<sentiment>.pdf
-    <outdir>/<distribution>/C<cost>_H<holding>/fig4_sentiment_paths.pdf
-    <outdir>/<distribution>/sweeps/fig6_holding_sweep_C<cost>.pdf
+    <outdir>/<arm>/<distribution>/C<cost>_H<holding>/fig1_paths_<sentiment>.pdf
+    <outdir>/<arm>/<distribution>/C<cost>_H<holding>/fig4_sentiment_paths.pdf
+    <outdir>/<arm>/<distribution>/sweeps/fig6_holding_sweep_C<cost>.pdf
 
-The full run is ~1.5k files; the ``--sentiments`` / ``--distributions`` /
-``--costs`` / ``--holdings`` filters redraw a slice without touching the rest.
+Only the three filtered arms are read — Pure Alpha, Pure Beta, Beta. The
+unfiltered ``benchmark/universal/`` control is skipped even when it is present on
+disk, so it never reaches a figure; ``tyche.common.figures.SELECTIONS`` is the one
+place that list lives, shared with ``plot_selection_figures``.
+
+The full run is ~4.5k files; the ``--arms`` / ``--sentiments`` / ``--distributions``
+/ ``--costs`` / ``--holdings`` filters redraw a slice without touching the rest.
 
 Two questions are answered, in this order:
 
@@ -33,6 +38,7 @@ an extrapolation from ~241 trading days — state that in the paper.
 
 Examples:
     uv run python scripts/plot_benchmark_figures.py
+    uv run python scripts/plot_benchmark_figures.py --arms pure_alpha
     uv run python scripts/plot_benchmark_figures.py --distributions student_t
     uv run python scripts/plot_benchmark_figures.py --costs 0 10 --holdings 5 20 --png
     uv run python scripts/plot_benchmark_figures.py --sentiments llama2_13b_chat
@@ -43,11 +49,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import matplotlib as mpl
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib.lines import Line2D
-
 
 from tyche.common.figures import (
     DISTRIBUTIONS,
@@ -56,6 +62,8 @@ from tyche.common.figures import (
     INK,
     INK_FAINT,
     INK_SOFT,
+    SELECTION_LABELS,
+    SELECTIONS,
     SENTIMENT_BACKENDS,
     SENTIMENT_COLORS,
     SENTIMENT_DASHES,
@@ -70,8 +78,6 @@ from tyche.common.figures import (
     use_paper_style,
     write_table,
 )
-
-import matplotlib as mpl  # noqa: E402  (only for locators/formatters below)
 
 # --- Vocabulary specific to the portfolio figures -----------------------------
 # Display order is fixed everywhere: a series keeps its colour and its dash no
@@ -119,22 +125,33 @@ TRADING_DAYS = 252
 def load_metrics(root: Path) -> pd.DataFrame:
     """Every ``cost_portfolio_metrics.csv`` stacked into one tidy frame.
 
-    Adds ``sentiment``/``distribution`` identity columns and drops any leaf that
-    has not been run yet, so a partial benchmark still plots.
+    Adds ``selection``/``sentiment``/``distribution`` identity columns and drops any
+    leaf that has not been run yet, so a partial benchmark still plots. The arm
+    loop is over ``SELECTIONS``, not over whatever directories exist, which is what
+    keeps the unfiltered ``universal`` control out of every figure below.
     """
     frames = []
-    for sentiment in SENTIMENT_BACKENDS:
-        for distribution in DISTRIBUTIONS:
-            path = root / sentiment / distribution / "cost_portfolio_metrics.csv"
-            if not path.exists():
-                continue
-            frame = pd.read_csv(path)
-            frame.insert(0, "sentiment", sentiment)
-            frame.insert(1, "distribution", distribution)
-            frames.append(frame)
+    for selection in SELECTIONS:
+        for sentiment in SENTIMENT_BACKENDS:
+            for distribution in DISTRIBUTIONS:
+                path = (
+                    root
+                    / selection
+                    / sentiment
+                    / distribution
+                    / "cost_portfolio_metrics.csv"
+                )
+                if not path.exists():
+                    continue
+                frame = pd.read_csv(path)
+                frame.insert(0, "selection", selection)
+                frame.insert(1, "sentiment", sentiment)
+                frame.insert(2, "distribution", distribution)
+                frames.append(frame)
     if not frames:
         raise FileNotFoundError(
-            f"no cost_portfolio_metrics.csv under {root} — run scripts/portfolio/*/ first"
+            f"no cost_portfolio_metrics.csv under {root}/<arm>/ for arms "
+            f"{list(SELECTIONS)} — run scripts/portfolio/macro_alpha/*/ first"
         )
     metrics = pd.concat(frames, ignore_index=True)
     metrics["transaction_cost_bps"] = metrics["transaction_cost_bps"].astype(int)
@@ -142,10 +159,21 @@ def load_metrics(root: Path) -> pd.DataFrame:
 
 
 def load_curve(
-    root: Path, sentiment: str, distribution: str, cost_bps: int, holding: int
+    root: Path,
+    selection: str,
+    sentiment: str,
+    distribution: str,
+    cost_bps: int,
+    holding: int,
 ) -> pd.DataFrame | None:
     """One equity-curve file: dates × allocation models, net of ``cost_bps``."""
-    path = root / sentiment / distribution / f"equity_curves_C{cost_bps}_H{holding}.csv"
+    path = (
+        root
+        / selection
+        / sentiment
+        / distribution
+        / f"equity_curves_C{cost_bps}_H{holding}.csv"
+    )
     if not path.exists():
         return None
     curve = pd.read_csv(path, index_col=0, parse_dates=True)
@@ -244,10 +272,21 @@ def _date_axis(ax) -> None:
     ax.xaxis.set_major_formatter(mpl.dates.DateFormatter("%b"))
 
 
-def _config_note(sentiment: str, distribution: str, cost: int, holding: int) -> str:
+def _arm_note(selection: str, distribution: str, cost: int, holding: int) -> str:
+    """The configuration line every panel carries, minus the sentiment backend."""
     return (
-        f"{SENTIMENT_LABELS[sentiment]} sentiment · {distribution.replace('_', '-')} "
+        f"{SELECTION_LABELS[selection]} · {distribution.replace('_', '-')} "
         f"returns · {cost} bp cost · {holding}-day holding"
+    )
+
+
+def _config_note(
+    selection: str, sentiment: str, distribution: str, cost: int, holding: int
+) -> str:
+    return (
+        f"{SELECTION_LABELS[selection]} · {SENTIMENT_LABELS[sentiment]} sentiment · "
+        f"{distribution.replace('_', '-')} returns · {cost} bp cost · "
+        f"{holding}-day holding"
     )
 
 
@@ -653,16 +692,17 @@ def table_sentiment_comparison(metrics: pd.DataFrame, outdir: Path, stem: str) -
 
 
 # --- Driver -------------------------------------------------------------------
-# Output layout. One directory per (distribution, cost, holding) cell, so the
+# Output layout. One directory per (arm, distribution, cost, holding) cell, so the
 # figures for a configuration sit together and the filenames stay short; the
 # parameter sweeps, which span every cell, live beside them in ``sweeps/``:
 #
-#   <outdir>/<distribution>/C<cost>_H<holding>/fig1_paths_<sentiment>.pdf
-#   <outdir>/<distribution>/sweeps/fig6_holding_sweep_C<cost>.pdf
+#   <outdir>/<arm>/<distribution>/C<cost>_H<holding>/fig1_paths_<sentiment>.pdf
+#   <outdir>/<arm>/<distribution>/sweeps/fig6_holding_sweep_C<cost>.pdf
 def _config_figures(
     root: Path,
     outdir: Path,
     metrics: pd.DataFrame,
+    selection: str,
     distribution: str,
     cost: int,
     holding: int,
@@ -678,18 +718,18 @@ def _config_figures(
         return []
 
     written: list[Path] = []
-    cell_dir = outdir / distribution / f"C{cost}_H{holding}"
+    cell_dir = outdir / selection / distribution / f"C{cost}_H{holding}"
     curves: dict[str, pd.DataFrame] = {}
 
     for sentiment in sentiments:
-        curve = load_curve(root, sentiment, distribution, cost, holding)
+        curve = load_curve(root, selection, sentiment, distribution, cost, holding)
         if curve is None:
             continue
         curves[sentiment] = curve
         rows = cell[cell["sentiment"] == sentiment]
         if rows.empty:
             continue
-        note = _config_note(sentiment, distribution, cost, holding)
+        note = _config_note(selection, sentiment, distribution, cost, holding)
         written.append(
             figure_cumulative_paths(
                 curve, rolling_window, note, cell_dir, f"fig1_paths_{sentiment}", png
@@ -713,10 +753,7 @@ def _config_figures(
     # per cell rather than once per backend — and only when more than one backend
     # has actually been run for this configuration.
     if len(curves) > 1:
-        note = (
-            f"{distribution.replace('_', '-')} returns · {cost} bp cost · "
-            f"{holding}-day holding"
-        )
+        note = _arm_note(selection, distribution, cost, holding)
         written.append(
             figure_sentiment_paths(curves, note, cell_dir, "fig4_sentiment_paths", png)
         )
@@ -732,6 +769,7 @@ def _config_figures(
 def _sweep_figures(
     outdir: Path,
     metrics: pd.DataFrame,
+    selection: str,
     distribution: str,
     costs: list[int],
     holdings: list[int],
@@ -739,7 +777,8 @@ def _sweep_figures(
 ) -> list[Path]:
     """The two parameter sweeps: one per cost, and one per holding period."""
     written: list[Path] = []
-    sweep_dir = outdir / distribution / "sweeps"
+    sweep_dir = outdir / selection / distribution / "sweeps"
+    arm = SELECTION_LABELS[selection]
     label = distribution.replace("_", "-")
 
     for cost in costs:
@@ -754,7 +793,7 @@ def _sweep_figures(
                 "sharpe",
                 "Sharpe ratio",
                 "Sensitivity to holding period",
-                f"{label} returns · {cost} bp cost",
+                f"{arm} · {label} returns · {cost} bp cost",
                 sweep_dir,
                 f"fig6_holding_sweep_C{cost}",
                 png,
@@ -774,7 +813,7 @@ def _sweep_figures(
                 "cum_return_net",
                 "Cumulative net return",
                 "Sensitivity to transaction cost",
-                f"{label} returns · {holding}-day holding",
+                f"{arm} · {label} returns · {holding}-day holding",
                 sweep_dir,
                 f"fig7_cost_sweep_H{holding}",
                 png,
@@ -799,6 +838,11 @@ def build(args: argparse.Namespace) -> list[Path]:
     root, outdir = Path(args.benchmark_root), Path(args.outdir)
     metrics = load_metrics(root)
 
+    arms = _selection(
+        args.arms,
+        [s for s in SELECTIONS if s in set(metrics["selection"])],
+        "selection arms",
+    )
     distributions = _selection(
         args.distributions,
         [d for d in DISTRIBUTIONS if d in set(metrics["distribution"])],
@@ -819,43 +863,50 @@ def build(args: argparse.Namespace) -> list[Path]:
     )
 
     print(
-        f"distributions={distributions} sentiments={sentiments}\n"
+        f"arms={arms} distributions={distributions} sentiments={sentiments}\n"
         f"costs={costs} holdings={holdings} "
-        f"→ {len(distributions) * len(costs) * len(holdings)} configurations",
+        f"→ {len(arms) * len(distributions) * len(costs) * len(holdings)} configurations",
         flush=True,
     )
 
     written: list[Path] = []
-    for distribution in distributions:
-        rows = metrics[metrics["distribution"] == distribution]
-        for cost in costs:
-            for holding in holdings:
-                cell = _config_figures(
-                    root,
-                    outdir,
-                    rows,
-                    distribution,
-                    cost,
-                    holding,
-                    sentiments,
-                    args.rolling_window,
-                    args.png,
-                )
-                written.extend(cell)
-                print(
-                    f"  {distribution} C{cost}_H{holding}: {len(cell)} files",
-                    flush=True,
-                )
-        sweeps = _sweep_figures(
-            outdir,
-            rows[rows["sentiment"].isin(sentiments)],
-            distribution,
-            costs,
-            holdings,
-            args.png,
-        )
-        written.extend(sweeps)
-        print(f"  {distribution} sweeps: {len(sweeps)} files", flush=True)
+    for selection in arms:
+        arm_rows = metrics[metrics["selection"] == selection]
+        for distribution in distributions:
+            rows = arm_rows[arm_rows["distribution"] == distribution]
+            for cost in costs:
+                for holding in holdings:
+                    cell = _config_figures(
+                        root,
+                        outdir,
+                        rows,
+                        selection,
+                        distribution,
+                        cost,
+                        holding,
+                        sentiments,
+                        args.rolling_window,
+                        args.png,
+                    )
+                    written.extend(cell)
+                    print(
+                        f"  {selection}/{distribution} C{cost}_H{holding}: "
+                        f"{len(cell)} files",
+                        flush=True,
+                    )
+            sweeps = _sweep_figures(
+                outdir,
+                rows[rows["sentiment"].isin(sentiments)],
+                selection,
+                distribution,
+                costs,
+                holdings,
+                args.png,
+            )
+            written.extend(sweeps)
+            print(
+                f"  {selection}/{distribution} sweeps: {len(sweeps)} files", flush=True
+            )
     return written
 
 
@@ -866,7 +917,14 @@ def main() -> None:
     parser.add_argument("--benchmark-root", default="benchmark")
     parser.add_argument("--outdir", default="benchmark/figures")
     # Every filter defaults to "everything present in the benchmark"; pass one to
-    # redraw a slice without regenerating the rest.
+    # redraw a slice without regenerating the rest. ``universal`` is not a choice:
+    # the unfiltered control is out of scope for these figures by design.
+    parser.add_argument(
+        "--arms",
+        nargs="+",
+        choices=SELECTIONS,
+        help="selection arms to draw (default: all)",
+    )
     parser.add_argument(
         "--sentiments",
         nargs="+",

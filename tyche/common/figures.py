@@ -36,6 +36,18 @@ SENTIMENT_LABELS = {
 }
 DISTRIBUTIONS: tuple[str, ...] = ("gaussian", "student_t")
 
+# Stock-selection arms, in fixed display order, shared by the benchmark and the
+# selection figures so an arm reads the same way in both. The unfiltered
+# ``universal`` control is deliberately absent: the paper reports the three
+# filtered arms only, so a ``benchmark/universal/`` tree left over from an earlier
+# run is skipped by both scripts rather than drawn.
+SELECTIONS: tuple[str, ...] = ("pure_alpha", "pure_beta", "beta")
+SELECTION_LABELS = {
+    "pure_alpha": r"Pure Alpha  $S_S \setminus S_I$",
+    "pure_beta": r"Pure Beta  $S_I \setminus S_S$",
+    "beta": r"Beta  $S_I \cap S_S$",
+}
+
 # Categorical hues in fixed slot order, validated as a set for colour-vision
 # deficiency (OKLab ΔE) against the print surface — these four clear the strict
 # all-pairs gates, which is what small multiples and scatter forms require.
