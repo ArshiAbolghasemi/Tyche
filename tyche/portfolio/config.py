@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tyche.common.env import _env, _env_list
+from tyche.news.config import settings as news_settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,8 +43,6 @@ def news_sentiment_model() -> str:
     run's ``paths.news_sentiment`` points at — used to key benchmark artifacts by
     the news model they were built on, so runs against different sentiment
     backends never overwrite each other."""
-    from tyche.news.config import settings as news_settings
-
     backends = list(news_settings.sentiment_backends.active)
     return backends[0] if backends else "unknown"
 
