@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pandas as pd
 import requests
+import yfinance as yf
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -118,8 +119,6 @@ FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv"
 
 def fetch_yahoo(names: dict[str, str], start: str, end: str) -> pd.DataFrame:
     """Adjusted closes for every Yahoo ticker, as a long frame."""
-    import yfinance as yf
-
     tickers = sorted(set(names.values()))
     raw = yf.download(
         tickers,

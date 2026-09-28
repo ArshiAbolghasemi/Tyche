@@ -8,6 +8,7 @@ here — that lives in the ``features_*`` modules.
 from __future__ import annotations
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from tyche.portfolio.config import Config
 from tyche.portfolio.data.universe import to_canonical
@@ -22,8 +23,6 @@ _NEWS_TIME_COLUMNS = ["valid_time", "date"]
 
 def _news_time_column(path) -> str:
     """The publication-time column present in the sentiment file."""
-    import pyarrow.parquet as pq
-
     available = set(pq.ParquetFile(path).schema_arrow.names)
     for candidate in _NEWS_TIME_COLUMNS:
         if candidate in available:

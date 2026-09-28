@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib as mpl
+import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -201,7 +202,5 @@ def ecdf(values: Any) -> tuple[Any, Any]:
     answers 0.8/0.1/0.1 for most articles puts a bar off the top of any density
     plot, while its ECDF just shows a vertical step at 0.8.
     """
-    import numpy as np
-
     ordered = np.sort(np.asarray(values, dtype=float))
     return ordered, np.arange(1, ordered.size + 1) / ordered.size

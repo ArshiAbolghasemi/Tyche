@@ -16,7 +16,7 @@ import pandas as pd
 from scipy import stats
 
 from tyche.common.logging import get_logger
-from tyche.news.agents import scorer, summarizer
+from tyche.news.agents import neutralizer, scorer, summarizer
 from tyche.news.config import settings
 from tyche.news.records import (
     Aggregate,
@@ -170,8 +170,6 @@ def audit_c(aggregated: pd.DataFrame) -> None:
     """Future rows must never change past scores. Neutralize the full set, then
     neutralize only the earliest 80% and assert those ``sentiment_final`` values are
     bit-for-bit identical."""
-    from tyche.news.agents import neutralizer
-
     log.info(
         "Audit C START: causality check on %d rows — neutralize the FULL set vs the "
         "earliest days only, then assert past sentiment_final is bit-for-bit identical",

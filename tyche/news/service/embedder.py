@@ -22,6 +22,7 @@ from functools import lru_cache
 import numpy as np
 import torch
 import torch.nn.functional as F
+from huggingface_hub import HfApi
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
@@ -90,8 +91,6 @@ def unload_model() -> None:
 @lru_cache(maxsize=1)
 def get_embedding_revision() -> str:
     """Frozen embedding-model revision (commit hash) for reproducibility / logging."""
-    from huggingface_hub import HfApi
-
     name = str(settings.embedding.name)
     revision = str(settings.embedding.revision)
     try:
