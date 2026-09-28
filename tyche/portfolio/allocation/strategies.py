@@ -71,12 +71,21 @@ def mvo(forecasts: MomentForecasts, cfg: Config) -> Strategy:
     return strat
 
 
-def bl(forecasts: MomentForecasts, cfg: Config) -> Strategy:
-    """Predicted views through BL, allocated by the direct BL closed form."""
+def bl(
+    forecasts: MomentForecasts,
+    reference_covs: Mapping[int, np.ndarray],
+    cfg: Config,
+) -> Strategy:
+    """Predicted views through BL, allocated by the direct BL closed form.
+
+    The BL prior covariance blends the predicted covariance with a historical
+    reference (``cfg.portfolio.cov_shrinkage``)."""
 
     def strat(t: int) -> np.ndarray:
         mu, cov = _moments(forecasts, t)
-        post_mu, post_cov = black_litterman_posterior(mu, cov, cov, cfg.portfolio)
+        post_mu, post_cov = black_litterman_posterior(
+            mu, cov, reference_covs[int(t)], cfg.portfolio
+        )
         return black_litterman_weights(post_mu, post_cov, cfg.portfolio)
 
     return strat

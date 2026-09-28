@@ -17,7 +17,7 @@ from tyche.ablation.experiment import (
     self_check,
 )
 from tyche.portfolio.config import default_config
-from tyche.portfolio.run import config_for_holding
+from tyche.portfolio.run import COV_SOURCES, config_for_holding
 
 PORTFOLIO_METHODS = ("EW", "BL", "Bayesian_BL", "MVO", "RP", "HRP")
 DISTRIBUTIONS = ("student_t", "gaussian")
@@ -88,6 +88,13 @@ def main() -> None:
         choices=DISTRIBUTIONS,
         default=list(DISTRIBUTIONS),
     )
+    parser.add_argument(
+        "--cov-sources",
+        nargs="+",
+        choices=COV_SOURCES,
+        default=list(COV_SOURCES),
+        help="allocator covariances compared on the full model's predictions",
+    )
     parser.add_argument("--holding", type=int, default=5)
     parser.add_argument("--output", type=Path, default=Path("benchmark/ablation"))
     parser.add_argument("--check", action="store_true")
@@ -115,15 +122,21 @@ def main() -> None:
                 cfg = artifact_config(
                     distribution_cfg, args.output, effective_regime, experiment
                 )
-                metric, curve = run_one(cfg, experiment)
+                # Covariance ablation reuses the full model's predictions.
+                sources = (
+                    tuple(args.cov_sources) if experiment == "full" else ("total",)
+                )
+                metric, run_curves = run_one(cfg, experiment, sources)
                 metric.insert(0, "regime", effective_regime)
                 metric.insert(0, "distribution", distribution)
                 frames.append(metric)
-                curves[(effective_regime, experiment)] = curve
                 run_dir = cfg.artifacts_dir
                 run_dir.mkdir(parents=True, exist_ok=True)
                 metric.to_csv(run_dir / "metrics.csv", index=False)
-                curve.to_csv(run_dir / "equity_curves.csv")
+                for label, curve in run_curves.items():
+                    curves[(effective_regime, label)] = curve
+                    name = "" if label == experiment else f"_{label}"
+                    curve.to_csv(run_dir / f"equity_curves{name}.csv")
 
         metrics = pd.concat(frames, ignore_index=True)
         metrics.to_csv(distribution_output / "ablation_metrics.csv", index=False)

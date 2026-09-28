@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
+from sklearn.covariance import ledoit_wolf
 
 from tyche.common.logging import get_logger
 from tyche.portfolio.allocation.backtest import run_backtest
@@ -38,6 +39,8 @@ DEFAULT_HOLDINGS: tuple[int, ...] = (1, 2, 3, 5, 10, 20, 40, 60)
 
 
 MomentForecasts = dict[int, tuple[np.ndarray, np.ndarray]]
+ReferenceCovs = dict[int, np.ndarray]
+COV_SOURCES = ("total", "aleatoric", "epistemic", "historical")
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,7 @@ class PreparedExperiment:
     oos: list[Sample]
     predictions: Predictions
     forecasts: MomentForecasts
+    reference_covs: ReferenceCovs
     oos_label: str
 
 
@@ -59,19 +63,47 @@ def _regularize_covariance(cov: np.ndarray, eps: float) -> np.ndarray:
     return cov
 
 
-def _build_forecasts(predictions: Predictions, cfg: Config) -> MomentForecasts:
+def _historical_cov(adj_close: np.ndarray, t: int, cfg: Config) -> np.ndarray:
+    """Ledoit-Wolf covariance of daily log returns known at ``t``, scaled to H days."""
+    start = max(0, t - cfg.portfolio.historical_cov_lookback)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rets = np.diff(np.log(adj_close[:, start : t + 1]), axis=1).T
+    # ponytail: missing prices count as zero return; drop sparse names if that biases.
+    rets = np.nan_to_num(rets, nan=0.0, posinf=0.0, neginf=0.0)
+    # i.i.d. daily returns: H-day covariance = H * daily covariance.
+    return ledoit_wolf(rets)[0] * cfg.window.holding
+
+
+def _build_forecasts(
+    predictions: Predictions, adj_close: np.ndarray, cfg: Config
+) -> tuple[MomentForecasts, ReferenceCovs]:
+    """Allocator moments plus the historical reference covariance BL blends with."""
+    source = cfg.portfolio.cov_source
+    if source not in COV_SOURCES:
+        raise ValueError(f"unknown cov_source {source!r}; choose from {COV_SOURCES}")
+    model_covs = {
+        "total": predictions.cov,
+        "aleatoric": predictions.aleatoric_cov,
+        "epistemic": predictions.epistemic_cov,
+    }
     forecasts: MomentForecasts = {}
-    for t, mu, cov in zip(
-        predictions.decision_t, predictions.mu, predictions.cov, strict=True
+    reference: ReferenceCovs = {}
+    for i, (t, mu) in enumerate(
+        zip(predictions.decision_t, predictions.mu, strict=True)
     ):
-        alloc_mu, alloc_cov = np.asarray(mu, dtype=float), np.asarray(cov, dtype=float)
+        historical = _historical_cov(adj_close, int(t), cfg)
+        cov = historical if source == "historical" else model_covs[source][i]
+        alloc_mu = np.asarray(mu, dtype=float)
+        alloc_cov = np.asarray(cov, dtype=float)
         if cfg.portfolio.convert_to_simple_returns:
+            historical = log_to_simple(alloc_mu, historical)[1]
             alloc_mu, alloc_cov = log_to_simple(alloc_mu, alloc_cov)
         forecasts[int(t)] = (
             alloc_mu,
             _regularize_covariance(alloc_cov, cfg.model.cov_eps),
         )
-    return forecasts
+        reference[int(t)] = _regularize_covariance(historical, cfg.model.cov_eps)
+    return forecasts, reference
 
 
 def prepare(cfg: Config) -> PreparedExperiment:
@@ -136,12 +168,14 @@ def prepare(cfg: Config) -> PreparedExperiment:
         pred_path,
     )
 
+    forecasts, reference_covs = _build_forecasts(predictions, data.adj_close, cfg)
     return PreparedExperiment(
         data=data,
         splits=splits,
         oos=oos,
         predictions=predictions,
-        forecasts=_build_forecasts(predictions, cfg),
+        forecasts=forecasts,
+        reference_covs=reference_covs,
         oos_label=oos_label,
     )
 
@@ -175,7 +209,7 @@ def _run_portfolios(prepared: PreparedExperiment, cfg: Config) -> dict:
     rebal_t = _rebalance_days(prepared.oos, cfg)
     strategies = {
         "EW": ew(data.adj_close),
-        "BL": bl(prepared.forecasts, cfg),
+        "BL": bl(prepared.forecasts, prepared.reference_covs, cfg),
         "Bayesian_BL": bayesian_bl(prepared.forecasts, cfg),
         "MVO": mvo(prepared.forecasts, cfg),
         "RP": rp(prepared.forecasts, cfg),

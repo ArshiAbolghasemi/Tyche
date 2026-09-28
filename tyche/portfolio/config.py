@@ -545,8 +545,16 @@ class PortfolioConfig:
             "TYCHE_PORTFOLIO_ALLOC_BL_RISK_AVERSION", 2.5, float
         )
     )
-    cov_shrinkage: float = field(  # blend predicted vs reference covariance
+    cov_shrinkage: float = field(  # BL prior: s * predicted + (1 - s) * historical
         default_factory=lambda: _env("TYCHE_PORTFOLIO_ALLOC_COV_SHRINKAGE", 0.3, float)
+    )
+    cov_source: str = field(  # total | aleatoric | epistemic | historical
+        default_factory=lambda: _env("TYCHE_PORTFOLIO_ALLOC_COV_SOURCE", "total")
+    )
+    historical_cov_lookback: int = field(  # trading days for Ledoit-Wolf reference
+        default_factory=lambda: _env(
+            "TYCHE_PORTFOLIO_ALLOC_HISTORICAL_COV_LOOKBACK", 252, int
+        )
     )
     max_weight: float = field(  # per-asset cap (constrained MVO only)
         default_factory=lambda: _env("TYCHE_PORTFOLIO_ALLOC_MAX_WEIGHT", 0.40, float)
